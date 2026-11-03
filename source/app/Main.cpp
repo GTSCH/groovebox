@@ -39,12 +39,14 @@ public:
                                                std::make_unique<ComportementMoteur>());
         engine->getDeviceManager().initialise (0, 4);
         appliquerReglagesDeDepart (*engine);
+        ouvrirLesEntreesDeLaCarte (*engine);
         // Le dernier morceau ouvert revient tel qu'on l'a laissé ; au tout premier lancement, la démo
         bibliotheque = std::make_unique<Bibliotheque>();
         plantageDetecte = bibliotheque->marquerOuverture();
         moteur = std::make_unique<Moteur> (*engine, morceauDeDepart());
         dossierCourant = moteur->getMorceau().nom;
         moteur->surChangementDeMorceau = [this] { sauvegardeEnAttente = true; suivreLeNom(); };
+        moteur->dossierDesPrises = [this] { return bibliotheque->dossierDe (dossierCourant).getChildFile ("prises"); };
         startTimer (2000);
 
         if (plantageDetecte)
@@ -96,7 +98,7 @@ public:
         }
 
         if (const auto i = arguments.indexOf ("--diagnostic"); i >= 0)
-            lancerDiagnostic (arguments[i + 1].getIntValue(), arguments.contains ("--demo"));
+            lancerDiagnostic (arguments[i + 1].getIntValue(), arguments.contains ("--demo"), arguments.contains ("--prise"));
         else
             demarrerLeJeu();
     }
@@ -111,6 +113,14 @@ public:
         ecranPush.reset();
         surface.reset();
         diagnostic.reset();
+
+        if (dossierDePriseDeDiagnostic != juce::File())
+        {
+            if (moteur != nullptr)
+                moteur->arreterPrise();
+
+            dossierDePriseDeDiagnostic.deleteRecursively();
+        }
 
         if (moteur != nullptr)
             sauvegarder();
@@ -401,7 +411,7 @@ private:
         Morceau morceauDeDepart;
     };
 
-    void lancerDiagnostic (int secondes, bool avecLaDemo)
+    void lancerDiagnostic (int secondes, bool avecLaDemo, bool avecUnePrise)
     {
         diagnosticEnCours = true;   // aucune sauvegarde pendant le diagnostic
 
@@ -409,6 +419,20 @@ private:
         if (avecLaDemo)
             moteur->chargerMorceau (morceauDeDemonstration());
         diagnostic = std::make_unique<Diagnostic> (*engine, *moteur, juce::jmax (1, secondes));
+
+        // Avec --prise : une prise pendant tout le diagnostic, dans un dossier temporaire effacé à la fermeture
+        if (avecUnePrise)
+        {
+            dossierDePriseDeDiagnostic = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("groovebox-diagnostic-prise");
+            dossierDePriseDeDiagnostic.deleteRecursively();
+            moteur->dossierDesPrises = [d = dossierDePriseDeDiagnostic] { return d; };
+            moteur->surPriseTerminee = [] (const juce::File& d)
+            {
+                juce::Logger::writeToLog ("Diagnostic : prise de "_fr + juce::String (d.getChildFile ("sortie.wav").getSize() / 1000000.0, 1) + " Mo écrite");
+                std::cout << "Diagnostic : prise de " << juce::String (d.getChildFile ("sortie.wav").getSize() / 1000000.0, 1) << " Mo" << std::endl;
+            };
+            moteur->demarrerPrise();
+        }
     }
 
     std::unique_ptr<juce::FileLogger> journal;
@@ -417,6 +441,7 @@ private:
     std::unique_ptr<Bibliotheque> bibliotheque;
     juce::String dossierCourant;
     bool plantageDetecte = false, diagnosticEnCours = false;
+    juce::File dossierDePriseDeDiagnostic;
     std::unique_ptr<Surface> surface;
     std::unique_ptr<EcranPush> ecranPush;
     std::unique_ptr<PushMidi> pushMidi;

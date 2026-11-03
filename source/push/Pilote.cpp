@@ -27,6 +27,12 @@ namespace
 
     constexpr double dureeDUneAnnonce = 1500.0;
 
+    juce::String formaterDuree (double secondes)
+    {
+        const int s = (int) secondes;
+        return juce::String (s / 60) + ":" + juce::String (s % 60).paddedLeft ('0', 2);
+    }
+
     juce::String nomDeLaDuree (int mesures)
     {
         return juce::String (mesures) + (mesures == 1 ? " mesure" : " mesures");
@@ -1320,6 +1326,24 @@ void Pilote::appuyer (int bouton)
             annoncer ("Setup", "Réglages du clic sur les encodeurs"_fr);
             return;
 
+        case Bouton::record:
+            if (moteur.priseEnCours())
+            {
+                const auto nom = moteur.priseCourante()->nom;
+                const auto duree = moteur.dureeDeLaPrise();
+                moteur.arreterPrise();
+                annoncer (nom + " enregistrée"_fr, formaterDuree (duree));
+            }
+            else if (moteur.demarrerPrise())
+            {
+                annoncer ("Record", moteur.priseCourante()->nom + " en cours"_fr);
+            }
+            else
+            {
+                annoncer ("Record", "Prise impossible : voir le journal"_fr);
+            }
+            return;
+
         case Bouton::user:
             page = Page::enchainement;
             annoncer ("Enchaînement"_fr, "Scène : lancer ainsi ; User tenu + scène : retenir"_fr);
@@ -1490,6 +1514,10 @@ EtatSurface Pilote::calculerEtat() const
     blanc (Bouton::user, page == Page::enchainement || moteur.enchainementEnCours().has_value());
     etat.bandeSansRetour = moteur.enchainementALaMain();
 
+    // Record : rouge qui clignote pendant une prise
+    etat.boutons[(size_t) Bouton::record] = moteur.priseEnCours() ? (std::fmod (juce::Time::getMillisecondCounterHiRes(), 1000.0) < 600.0 ? palette::rouge : palette::grisFonce)
+                                                                   : palette::grisFonce;
+
     if (page == Page::mix || page == Page::envoisDelay || page == Page::envoisReverb || page == Page::departs)
     {
         if (page != Page::mix) blanc (Bouton::pageGauche, false);
@@ -1560,7 +1588,7 @@ void Pilote::dessinerEcran (juce::Image& image) const
     else if (p.mesure < 1)
         position = "Décompte "_fr + juce::String (1 - p.mesure);
     else
-        position = "Mesure " + juce::String (p.mesure) + "   temps " + juce::String (p.temps + 1);
+        position = "Mesure " + juce::String (p.mesure) + (moteur.priseEnCours() ? juce::String() : "   temps " + juce::String (p.temps + 1));   // pendant une prise, la place va à sa durée
 
     g.setColour (p.enLecture ? actif : discret);
     g.setFont (juce::FontOptions (28.0f, juce::Font::bold));
@@ -1572,6 +1600,18 @@ void Pilote::dessinerEcran (juce::Image& image) const
     g.setColour (morceau.clic.actif ? fond : discret);
     g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
     g.drawText (morceau.clic.actif ? juce::String ("Clic") : juce::String ("Clic coupé"_fr), zoneClic, juce::Justification::centred);
+
+    // Prise en cours : un point rouge et la durée
+    if (moteur.priseEnCours())
+    {
+        const auto zone = juce::Rectangle<float> (largeur - 290.0f, 9.0f, 128.0f, 30.0f);
+        g.setColour (juce::Colour (0xffe5484d));
+        g.fillRoundedRectangle (zone, 6.0f);
+        g.setColour (texte);
+        g.fillEllipse (zone.getX() + 10.0f, zone.getCentreY() - 7.0f, 14.0f, 14.0f);
+        g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
+        g.drawText (formaterDuree (moteur.dureeDeLaPrise()), zone.withTrimmedLeft (30.0f), juce::Justification::centred);
+    }
 
     g.setColour (panneau);
     g.fillRect (0.0f, 50.0f, largeur, 2.0f);

@@ -23,6 +23,46 @@ juce::File Reglages::getAppPrefsFolder()
     return dossier;
 }
 
+void reglerLesEntrees (juce::AudioDeviceManager& cartes, juce::AudioDeviceManager::AudioDeviceSetup& reglage)
+{
+    bool aSesEntrees = false;
+
+    if (auto* type = cartes.getCurrentDeviceTypeObject())
+        aSesEntrees = reglage.outputDeviceName.isNotEmpty() && type->getDeviceNames (true).contains (reglage.outputDeviceName);
+
+    reglage.useDefaultInputChannels = false;
+    reglage.inputChannels.clear();
+
+    if (aSesEntrees)
+    {
+        reglage.inputDeviceName = reglage.outputDeviceName;
+        reglage.inputChannels.setRange (0, 2, true);
+    }
+    else
+    {
+        reglage.inputDeviceName = {};
+    }
+}
+
+void ouvrirLesEntreesDeLaCarte (te::Engine& engine)
+{
+    auto& cartes = engine.getDeviceManager().deviceManager;
+    const auto avant = cartes.getAudioDeviceSetup();
+    auto reglage = avant;
+    reglerLesEntrees (cartes, reglage);
+
+    if (reglage.inputDeviceName == avant.inputDeviceName && reglage.inputChannels == avant.inputChannels)
+        return;
+
+    const auto erreur = cartes.setAudioDeviceSetup (reglage, true);
+
+    if (erreur.isNotEmpty())
+        juce::Logger::writeToLog ("Entrées de la carte son impossibles à ouvrir : "_fr + erreur);
+    else
+        juce::Logger::writeToLog (reglage.inputDeviceName.isEmpty() ? juce::String ("Aucune entrée : la carte de sortie n'en a pas")
+                                                                    : "Entrées 1-2 ouvertes sur "_fr + reglage.inputDeviceName);
+}
+
 void appliquerReglagesDeDepart (te::Engine& engine)
 {
     auto& fichier = engine.getPropertyStorage().getPropertiesFile();

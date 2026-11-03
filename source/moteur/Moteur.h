@@ -7,6 +7,8 @@
 #include "SonsDeSynthe.h"
 #include "EffetsMaison.h"
 #include "VoixPlugin.h"
+#include "EnregistreurAudio.h"
+#include "modele/Prise.h"
 #include "modele/Morceau.h"
 
 namespace groovebox
@@ -153,6 +155,19 @@ public:
     /** Instrument d'une voix (0 : A, 1 : B), pour les essais. */
     te::AudioTrack* voix (int piste, int laquelle) const   { return pistesMoteur[(size_t) piste].voix[(size_t) laquelle]; }
 
+    //==============================================================================
+    /** Prises (bouton Record) : tous les gestes, calés sur les temps, et le son (sortie principale, micros s'il y a une entrée).
+        À l'arrêt, la prise lance la lecture et commence à la mesure 1 ; en lecture, elle commence à la mesure en cours.
+        Elle se termine au second appui, ou quand la lecture s'arrête. */
+    std::function<juce::File()> dossierDesPrises;       ///< Dossier des prises du morceau ; sans lui, pas de prise
+    bool demarrerPrise();
+    std::optional<juce::File> arreterPrise();           ///< Renvoie le dossier de la prise terminée
+    bool priseEnCours() const                           { return prise.has_value(); }
+    const Prise* priseCourante() const                  { return prise ? &*prise : nullptr; }
+    double dureeDeLaPrise() const;                      ///< En secondes
+    std::function<void (const juce::File&)> surPriseTerminee;
+    EnregistreurDEntree& getEntreeDesMicros()           { return entreeDesMicros; }
+
     /** Appelé (fil principal) après chaque modification du morceau. */
     std::function<void()> surChangementDeMorceau;
 
@@ -279,6 +294,29 @@ private:
     bool demarrageEnAttente = false;
     double instantDuDemarrage = 0.0, tempsDuDepart = 0.0;
     std::vector<std::pair<int, int>> lancementsAuDemarrage;
+
+    // Prise en cours
+    std::optional<Prise> prise;
+    juce::File dossierDeLaPrise;
+    double instantDuDebutDeLaPrise = 0.0;
+    EnregistreurDeSortiePlugin* enregistreurDeSortie = nullptr;
+    EnregistreurDEntree entreeDesMicros;
+    std::unique_ptr<EnregistrementAudio> enregistrementAudio;
+    int imbrication = 0;
+
+    /** Un appel venu de l'extérieur (et non d'une autre fonction du moteur) : c'est lui qu'on note dans la prise. */
+    struct Appel
+    {
+        Moteur& m;
+        const bool exterieur;
+        explicit Appel (Moteur& mm)  : m (mm), exterieur (mm.imbrication++ == 0) {}
+        ~Appel()                     { --m.imbrication; }
+        bool aNoter() const          { return exterieur && m.prise.has_value(); }
+    };
+
+    void noter (EvenementDePrise);
+    void noterReglages (const Morceau& avant);
+    double caleDuLancement() const;
 
     // Annulation
     std::vector<Morceau> historique, futur;

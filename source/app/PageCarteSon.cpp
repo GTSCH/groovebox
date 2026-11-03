@@ -1,5 +1,6 @@
 #include "PageCarteSon.h"
 #include "Style.h"
+#include "moteur/Reglages.h"
 
 namespace groovebox
 {
@@ -118,6 +119,7 @@ void PageCarteSon::changerCarte (const std::function<void (juce::AudioDeviceMana
     reglage.useDefaultOutputChannels = false;
     reglage.outputChannels.clear();
     reglage.outputChannels.setRange (0, 4, true);
+    reglerLesEntrees (cartes, reglage);
 
     const auto erreur = cartes.setAudioDeviceSetup (reglage, true);
 

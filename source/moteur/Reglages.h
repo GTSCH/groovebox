@@ -25,4 +25,9 @@ private:
 /** Au tout premier lancement : 48 kHz et tampon de 128 échantillons. Ensuite, on garde le choix de l'utilisateur. */
 void appliquerReglagesDeDepart (te::Engine&);
 
+/** Entrées 1-2 (micros de la batterie) : ouvertes seulement si la carte de sortie a ses propres entrées (la Scarlett).
+    Sinon, aucune entrée : mélanger deux appareils (haut-parleurs et micro du Mac) risquerait des coupures. */
+void reglerLesEntrees (juce::AudioDeviceManager&, juce::AudioDeviceManager::AudioDeviceSetup&);
+void ouvrirLesEntreesDeLaCarte (te::Engine&);
+
 } // namespace groovebox

@@ -16,7 +16,8 @@ Groovebox logicielle pour Mac, pilotée au Push 2. Le cahier des charges est dan
 | 6b. Générateur de basses et mélodies | Faite et validée à l'oreille le 03.11.2026 |
 | 7. Effets | Faite et validée à l'oreille le 03.11.2026 |
 | 8. Enchaînements | 8a (enchaînements automatiques) validée à l'oreille le 03.11.2026 ; 8b (à la main, montée) validée à l'oreille le 03.11.2026 |
-| 9 à 11 | Pas commencées |
+| 9. Capture, retouche, rejeu | 9a (capture) validée à l'oreille le 03.11.2026 ; 9b (retouche, déroulé) et 9c (rejeu) à faire |
+| 10 et 11 | Pas commencées |
 
 ## Organisation
 
@@ -47,6 +48,7 @@ La première compilation prend quelques minutes ; les suivantes sont rapides.
 - Réglages (carte son, fréquence, tampon) : `~/Library/Application Support/groovebox/Settings.xml`
 - Sons : `~/Music/groovebox/Sons/<catégorie>/*.wav`. Les 4 kits de départ (Analogique, Minimal, Dub, Hard techno) y sont fabriqués au premier lancement s'ils manquent ; on peut y ajouter ses propres fichiers.
 - Morceaux : `~/Music/groovebox/Morceaux/<nom>/morceau.json` (sauvegardé dans les 2 secondes qui suivent chaque changement), copies de secours dans `sauvegardes/` (une toutes les 5 minutes, les 20 dernières). Le dernier ouvert revient au lancement. Hors du OneDrive.
+- Prises : dans le dossier du morceau, `prises/<date et heure>/` : `prise.json` (le journal des gestes), `sortie.wav` (la sortie principale) et `micros.wav` (entrées 1-2, seulement si la carte de sortie a ses propres entrées). WAV 24 bits, environ 17 Mo par minute et par fichier. Elles suivent le morceau quand on le renomme. L'onglet « Prises » les montre, les réécoute (sur 1-2), les renomme et les met à la corbeille.
 - Journal : `~/Library/Logs/groovebox/journal.txt`
 
 ## Diagnostic sans fenêtre
@@ -55,7 +57,7 @@ La première compilation prend quelques minutes ; les suivantes sont rapides.
 /Applications/groovebox.app/Contents/MacOS/groovebox --diagnostic 60
 ```
 
-Avec `--demo` en plus, le diagnostic joue la démo au lieu du dernier morceau ouvert (qui n'est ni changé ni sauvegardé).
+Avec `--demo` en plus, le diagnostic joue la démo au lieu du dernier morceau ouvert (qui n'est ni changé ni sauvegardé). Avec `--prise`, il enregistre aussi une prise pendant tout le diagnostic, dans un dossier temporaire effacé à la fermeture.
 
 Fait tourner le moteur 60 secondes avec les bips actifs mais muets, en enchaînant toutes les 4 secondes par un fondu d'une mesure, avec montée, entre les deux scènes les plus remplies, puis écrit dans le journal les coupures du son et la charge maximale.
 
@@ -90,4 +92,6 @@ Essais : `construction/groovebox_essais_artefacts/Release/groovebox_essais` les 
 - Push, page Enchaînement (bouton User) : type, durée, batterie nette, intensité ; l'écran montre l'enchaînement en cours et les deux scènes, et la ligne sous l'en-tête avance avec lui sur toutes les pages. Page ouverte, un bouton de scène lance avec ces réglages ; User tenu + scène retient l'enchaînement pour entrer dans la scène (rappuyer le retire). Ailleurs, une scène entre avec son enchaînement retenu, sinon celui de la page ; un clip lancé seul prend celui de la page.
 - Enchaînement à la main : Shift + scène (`Moteur::preparerScene`) lance la scène en silence sur les voix libres, au calage ; la bande tactile passe en curseur (barre depuis le bas, sans retour au centre : `EtatSurface::bandeSansRetour`, qui envoie la configuration au Push) et donne l'avancée de toutes les pistes. Batterie nette : elle change d'un coup au milieu de la bande. En haut, la nouvelle scène prend la main ; redescendu en bas (après être monté), rien n'a changé ; relancer la scène préparée finit le mélange seul, à la vitesse de la durée choisie ; lancer une autre scène l'annule d'abord. Ensuite, la bande attend d'être lâchée avant de redevenir le filtre global. Une coupe choisie devient un fondu à la main.
 - Montée (encodeur 5 de la page Enchaînement) : sur la dernière mesure avant la bascule (ou ce qui en reste), le filtre de sortie monte en passe-haut, de plus en plus vite, à l'échantillon près (`FiltrePlugin::programmerMontee`), et les envois à la réverbération de toutes les pistes grimpent (fil principal). À la bascule, tout retombe d'un coup et la queue de réverbération sonne sur la nouvelle scène. Marche aussi avec la coupe ; pas de montée quand on annule.
+- Prises (`modele/Prise`, `moteur/EnregistreurAudio`) : Record (Push ou onglet Prises) note chaque geste venu de l'extérieur du moteur (un appel interne n'est pas noté deux fois) avec son temps et, pour les lancements, le temps du calage où il prend effet ; les réglages sont notés comme écarts entre deux JSON du morceau (`ecarts::entre`, réappliqués par `ecarts::appliquer`). Le morceau et les scènes qui jouent au départ sont gardés. Son : un maillon en fin de sortie principale (`EnregistreurDeSortiePlugin`) et un rappel à côté du moteur pour l'entrée (`EnregistreurDEntree`) déposent les échantillons ; `ThreadedWriter` les écrit sur un fil à part (8 s de réserve). À l'arrêt, une prise lance la lecture et commence à la mesure 1 ; en lecture, à la mesure en cours ; elle finit au second appui, à l'arrêt de la lecture ou en changeant de morceau.
+- Entrées : ouvertes seulement si la carte de sortie a les siennes (`reglerLesEntrees`) ; marier les haut-parleurs et le micro du Mac en une seule carte risquerait des coupures. Dans les essais, la carte simulée donne la même mémoire à l'entrée et à la sortie : le contenu des micros s'y vérifie à part.
 - Licences : Airwindows MIT ; Surge XT GPL v3 ; Grids (carte de grooves) GPL v3 ; libusb LGPL 2.1 ; Tracktion Engine GPL v3, JUCE AGPL v3. Usage personnel, aucune contrainte.

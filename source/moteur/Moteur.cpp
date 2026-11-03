@@ -83,6 +83,7 @@ Moteur::Moteur (te::Engine& e, Morceau depart, BanqueDeSons* banqueFournie)  : e
     engine.getPluginManager().createBuiltInType<PunchPlugin>();
     engine.getPluginManager().createBuiltInType<GravePlugin>();
     engine.getPluginManager().createBuiltInType<VoixPlugin>();
+    engine.getPluginManager().createBuiltInType<EnregistreurDeSortiePlugin>();
     contraindre (morceau);
 
     edit = te::Edit::createSingleTrackEdit (engine);
@@ -183,6 +184,9 @@ Moteur::Moteur (te::Engine& e, Morceau depart, BanqueDeSons* banqueFournie)  : e
     filtreDeSortie = dynamic_cast<FiltrePlugin*> (ajouterALaSortie (FiltrePlugin::xmlTypeName));
     filtreDeSortie->resonance = 0.25f;
     limiteurDeSortie = dynamic_cast<LimiteurPlugin*> (ajouterALaSortie (LimiteurPlugin::xmlTypeName));
+    enregistreurDeSortie = dynamic_cast<EnregistreurDeSortiePlugin*> (ajouterALaSortie (EnregistreurDeSortiePlugin::xmlTypeName));
+    enregistrementAudio = std::make_unique<EnregistrementAudio> (*enregistreurDeSortie, entreeDesMicros);
+    engine.getDeviceManager().deviceManager.addAudioCallback (&entreeDesMicros);
     limiteurDuCasque = ajouterPlugin<LimiteurPlugin> (*pisteCasque, -1);
     limiteurDuCasque->compression = 0.0f;
 
@@ -203,6 +207,9 @@ Moteur::Moteur (te::Engine& e, Morceau depart, BanqueDeSons* banqueFournie)  : e
 
 Moteur::~Moteur()
 {
+    arreterPrise();
+    engine.getDeviceManager().deviceManager.removeAudioCallback (&entreeDesMicros);
+    enregistrementAudio.reset();
     stopTimer();
     engine.getDeviceManager().removeChangeListener (this);
     edit->getTransport().stop (false, true);
@@ -211,6 +218,7 @@ Moteur::~Moteur()
 //==============================================================================
 void Moteur::modifier (const std::function<void (Morceau&)>& changement, const juce::String& geste)
 {
+    Appel appel (*this);
     auto nouveau = morceau;
     changement (nouveau);
     contraindre (nouveau);
@@ -247,6 +255,9 @@ void Moteur::modifier (const std::function<void (Morceau&)>& changement, const j
     const auto ancien = morceau;
     morceau = nouveau;
     appliquerDifferences (ancien);
+
+    if (appel.aNoter())
+        noterReglages (ancien);
 
     if (surChangementDeMorceau)
         surChangementDeMorceau();
@@ -309,6 +320,8 @@ void Moteur::chargerMorceau (const Morceau& nouveau)
 
 bool Moteur::annuler()
 {
+    Appel appel (*this);
+
     if (historique.empty())
         return false;
 
@@ -323,6 +336,9 @@ bool Moteur::annuler()
     dernierGeste = {};
     appliquerDifferences (ancien);
 
+    if (appel.aNoter())
+        noterReglages (ancien);
+
     if (surChangementDeMorceau)
         surChangementDeMorceau();
 
@@ -331,6 +347,8 @@ bool Moteur::annuler()
 
 bool Moteur::retablir()
 {
+    Appel appel (*this);
+
     if (futur.empty())
         return false;
 
@@ -345,10 +363,136 @@ bool Moteur::retablir()
     dernierGeste = {};
     appliquerDifferences (ancien);
 
+    if (appel.aNoter())
+        noterReglages (ancien);
+
     if (surChangementDeMorceau)
         surChangementDeMorceau();
 
     return true;
+}
+
+//==============================================================================
+double Moteur::caleDuLancement() const
+{
+    // À l'arrêt ou pendant le démarrage, tout part à la mesure 1
+    if (enLecture() && ! demarrageEnAttente)
+        if (auto instant = prochainCalage())
+            return instant->temps;
+
+    return tempsDeLaMesure1();
+}
+
+void Moteur::noter (EvenementDePrise e)
+{
+    if (! prise)
+        return;
+
+    e.temps = demarrageEnAttente || ! enLecture() ? tempsDuDepart : tempsActuel();
+    prise->evenements.push_back (std::move (e));
+}
+
+void Moteur::noterReglages (const Morceau& avant)
+{
+    const auto changements = ecarts::entre (avant.versJson(), morceau.versJson());
+
+    if (changements.isEmpty())
+        return;
+
+    EvenementDePrise e;
+    e.genre = EvenementDePrise::Genre::reglages;
+    e.changements = changements;
+    noter (std::move (e));
+}
+
+bool Moteur::demarrerPrise()
+{
+    if (prise || ! dossierDesPrises)
+        return false;
+
+    const auto racine = dossierDesPrises();
+
+    if (racine == juce::File() || ! racine.createDirectory())
+        return false;
+
+    // Un dossier par prise, à la date et à l'heure ; le nom se change ensuite
+    const auto date = juce::Time::getCurrentTime();
+    auto dossier = racine.getChildFile (date.formatted ("%Y-%m-%d %H-%M-%S"));
+
+    for (int k = 2; dossier.exists(); ++k)
+        dossier = racine.getChildFile (date.formatted ("%Y-%m-%d %H-%M-%S") + " (" + juce::String (k) + ")");
+
+    if (! dossier.createDirectory())
+        return false;
+
+    int deja = 0;
+
+    for (auto& d : racine.findChildFiles (juce::File::findDirectories, false))
+        deja += d.getChildFile ("prise.json").existsAsFile() ? 1 : 0;
+
+    Prise p;
+    p.nom = "Prise " + juce::String (deja + 1);
+    p.date = date;
+    p.morceauDeDepart = morceau;
+
+    if (! enLecture())
+    {
+        lancer();
+        p.debut = tempsDeLaMesure1();
+    }
+    else
+    {
+        // La prise commence au début de la mesure en cours
+        const auto parMesure = (double) morceau.mesure.numerateur;
+        const auto mesure1 = tempsDeLaMesure1();
+        p.debut = mesure1 + std::floor ((juce::jmax (mesure1, tempsActuel()) - mesure1) / parMesure) * parMesure;
+
+        for (int k = 0; k < nombreDePistes; ++k)
+        {
+            const auto& t = enchainements[(size_t) k];
+            p.scenesDeDepart[(size_t) k] = t.enCours ? t.sceneVisee() : sceneSurLaVoix (k, voixCourantes[(size_t) k]);
+        }
+    }
+
+    p.avecMicros = entreeDesMicros.canauxDisponibles() > 0;
+
+    if (! enregistrementAudio->demarrer (dossier, engine.getDeviceManager().getSampleRate(), p.avecMicros))
+        juce::Logger::writeToLog ("Prise : son impossible à enregistrer dans "_fr + dossier.getFullPathName());
+
+    prise = std::move (p);
+    dossierDeLaPrise = dossier;
+    instantDuDebutDeLaPrise = juce::Time::getMillisecondCounterHiRes();
+    prise->enregistrer (dossier.getChildFile ("prise.json"));
+    juce::Logger::writeToLog ("Prise commencée : "_fr + dossier.getFullPathName());
+    return true;
+}
+
+std::optional<juce::File> Moteur::arreterPrise()
+{
+    if (! prise)
+        return std::nullopt;
+
+    prise->fin = enLecture() && ! demarrageEnAttente ? juce::jmax (prise->debut, tempsActuel()) : prise->debut;
+    prise->debutDuSon = enregistreurDeSortie->premierInstant();
+    enregistrementAudio->arreter();
+
+    if (! prise->enregistrer (dossierDeLaPrise.getChildFile ("prise.json")))
+        juce::Logger::writeToLog ("Prise : journal impossible à écrire dans "_fr + dossierDeLaPrise.getFullPathName());
+
+    juce::Logger::writeToLog ("Prise terminée : "_fr + juce::String ((int) prise->evenements.size()) + " gestes, "
+                              + juce::String (prise->dureeEnSecondes(), 1) + " s");
+    prise.reset();
+    const auto dossier = dossierDeLaPrise;
+
+    if (surPriseTerminee)
+        surPriseTerminee (dossier);
+
+    return dossier;
+}
+
+double Moteur::dureeDeLaPrise() const
+{
+    return prise ? (juce::Time::getMillisecondCounterHiRes() - instantDuDebutDeLaPrise) / 1000.0 : 0.0;
 }
 
 //==============================================================================
@@ -671,13 +815,23 @@ void Moteur::appliquerEffetsDeDepart()
 
 void Moteur::envoiMomentane (int piste, bool tenu)
 {
+    Appel appel (*this);
     piste = juce::jlimit (0, nombreDePistes - 1, piste);
+
+    if (appel.aNoter())
+        noter ({ EvenementDePrise::Genre::envoiMomentane, 0.0, std::nullopt, piste, -1, std::nullopt, tenu ? 1.0f : 0.0f });
+
     momentanes[(size_t) piste] = tenu;
     pistesMoteur[(size_t) piste].envoiDelay->setGainDb (tenu ? 0.0f : morceau.pistes[(size_t) piste].envoiDelayDb);
 }
 
 void Moteur::filtreGlobal (float position)
 {
+    Appel appel (*this);
+
+    if (appel.aNoter())
+        noter ({ EvenementDePrise::Genre::filtreGlobal, 0.0, std::nullopt, -1, -1, std::nullopt, juce::jlimit (0.0f, 1.0f, position) });
+
     filtreDeSortie->position = juce::jlimit (0.0f, 1.0f, position);
 }
 
@@ -702,6 +856,11 @@ std::vector<double> Moteur::debutsJoues (int piste, int scene) const
 //==============================================================================
 void Moteur::jouerNote (int piste, int note, int velocite)
 {
+    Appel appel (*this);
+
+    if (appel.aNoter())
+        noter ({ EvenementDePrise::Genre::note, 0.0, std::nullopt, piste, -1, std::nullopt, (float) note, juce::jlimit (1, 127, velocite) });
+
     piste = juce::jlimit (0, nombreDePistes - 1, piste);
 
     if (auto v = pistesMoteur[(size_t) piste].voix[(size_t) voixCourantes[(size_t) piste]])
@@ -710,6 +869,11 @@ void Moteur::jouerNote (int piste, int note, int velocite)
 
 void Moteur::relacherNote (int piste, int note)
 {
+    Appel appel (*this);
+
+    if (appel.aNoter())
+        noter ({ EvenementDePrise::Genre::note, 0.0, std::nullopt, piste, -1, std::nullopt, (float) note, 0 });
+
     // Relâchée sur les deux voix : la voix courante a pu changer pendant que la note était tenue
     for (auto* v : pistesMoteur[(size_t) juce::jlimit (0, nombreDePistes - 1, piste)].voix)
         v->injectLiveMidiMessage (juce::MidiMessage::noteOff (1, note), {});
@@ -851,6 +1015,11 @@ int Moteur::voixQuiJoue (int piste, int scene) const
 
 void Moteur::lancerClip (int piste, int scene, std::optional<Enchainement> choisi)
 {
+    Appel appel (*this);
+
+    if (appel.aNoter())
+        noter ({ EvenementDePrise::Genre::scene, 0.0, caleDuLancement(), piste, scene, choisi.value_or (morceau.enchainement) });
+
     if (morceau.clip (piste, scene) == nullptr)
     {
         arreterPiste (piste);   // une case vide arrête la piste
@@ -874,8 +1043,14 @@ void Moteur::lancerClip (int piste, int scene, std::optional<Enchainement> chois
 
 void Moteur::lancerScene (int scene, std::optional<Enchainement> choisi)
 {
+    Appel appel (*this);
+
     if (scene < 0 || scene >= (int) morceau.scenes.size())
         return;
+
+    if (appel.aNoter())
+        noter ({ EvenementDePrise::Genre::scene, 0.0, caleDuLancement(), -1, scene,
+                 choisi ? *choisi : morceau.scenes[(size_t) scene].entree.value_or (morceau.enchainement) });
 
     // Pendant un enchaînement à la main : relancer la scène préparée le termine tout seul ; une autre scène l'annule d'abord
     if (enchainementALaMain())
@@ -926,8 +1101,14 @@ bool Moteur::pisteAChanger (int p, int scene, bool nette) const
 //==============================================================================
 void Moteur::preparerScene (int scene, std::optional<Enchainement> choisi)
 {
+    Appel appel (*this);
+
     if (scene < 0 || scene >= (int) morceau.scenes.size())
         return;
+
+    if (appel.aNoter())
+        noter ({ EvenementDePrise::Genre::preparation, 0.0, caleDuLancement(), -1, scene,
+                 choisi ? *choisi : morceau.scenes[(size_t) scene].entree.value_or (morceau.enchainement) });
 
     // À l'arrêt, rien à mélanger : lancement normal
     if (! enLecture() || demarrageEnAttente)
@@ -966,8 +1147,13 @@ bool Moteur::enchainementALaMain() const
 
 void Moteur::melangerALaMain (float position)
 {
+    Appel appel (*this);
+
     if (! enchainementALaMain())
         return;
+
+    if (appel.aNoter())
+        noter ({ EvenementDePrise::Genre::melange, 0.0, std::nullopt, -1, -1, std::nullopt, juce::jlimit (0.0f, 1.0f, position) });
 
     positionManuelle = juce::jlimit (0.0f, 1.0f, position);
     bandeDejaMontee = bandeDejaMontee || positionManuelle > 0.05f;
@@ -1364,6 +1550,11 @@ std::optional<EtatEnchainement> Moteur::enchainementEnCours() const
 
 void Moteur::arreterPiste (int piste)
 {
+    Appel appel (*this);
+
+    if (appel.aNoter())
+        noter ({ EvenementDePrise::Genre::arret, 0.0, caleDuLancement(), piste });
+
     if (demarrageEnAttente)
     {
         auto& attente = lancementsAuDemarrage;
@@ -1380,6 +1571,11 @@ void Moteur::arreterPiste (int piste)
 
 void Moteur::arreterTousLesClips()
 {
+    Appel appel (*this);
+
+    if (appel.aNoter())
+        noter ({ EvenementDePrise::Genre::arret, 0.0, caleDuLancement(), -1 });
+
     for (int p = 0; p < nombreDePistes; ++p)
         arreterPiste (p);
 }
@@ -1597,6 +1793,7 @@ void Moteur::lancer()
 
 void Moteur::arreter()
 {
+    arreterPrise();     // la prise s'arrête avec la lecture
     lectureVoulue = false;
     demarrageEnAttente = false;
     lancementsAuDemarrage.clear();

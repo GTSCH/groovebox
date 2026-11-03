@@ -13,6 +13,7 @@
 #include "push/EcranPush.h"
 #include "push/PushMidi.h"
 #include "app/Simulateur.h"
+#include "app/PagePrises.h"
 #include "moteur/SonsDeSynthe.h"
 
 namespace groovebox
@@ -32,13 +33,13 @@ namespace
     class CarteSimulee
     {
     public:
-        CarteSimulee (te::Engine& e, int sorties)
-            : engine (e), nombreDeSorties (sorties)
+        CarteSimulee (te::Engine& e, int sorties, int entrees = 0)
+            : engine (e), nombreDeSorties (sorties), nombreDEntrees (entrees)
         {
             te::HostedAudioDeviceInterface::Parameters p;
             p.sampleRate = frequence;
             p.blockSize = 128;
-            p.inputChannels = 0;
+            p.inputChannels = entrees;
             p.outputChannels = sorties;
             io.initialise (p);
             io.prepareToPlay (frequence, 128);
@@ -54,25 +55,40 @@ namespace
             engine.getDeviceManager().removeHostedAudioDeviceInterface();
         }
 
+        /** Ce qui arrive sur les entrées (les micros) : une valeur par canal et par échantillon. */
+        std::function<float (int canal, juce::int64 echantillon)> entree;
+
         juce::AudioBuffer<float> jouer (int n)
         {
-            juce::AudioBuffer<float> sortie (nombreDeSorties, n);
-            sortie.clear();
+            const int canaux = std::max (nombreDeSorties, nombreDEntrees);
+            juce::AudioBuffer<float> tout (canaux, n);
+            tout.clear();
             juce::MidiBuffer midi;
+
+            for (int c = 0; c < nombreDEntrees && entree; ++c)
+                for (int i = 0; i < n; ++i)
+                    tout.setSample (c, i, entree (c, joues + i));
 
             for (int debut = 0; debut < n; debut += 128)
             {
                 const int k = std::min (128, n - debut);
-                juce::AudioBuffer<float> bloc (sortie.getArrayOfWritePointers(), nombreDeSorties, debut, k);
+                juce::AudioBuffer<float> bloc (tout.getArrayOfWritePointers(), canaux, debut, k);
                 io.processBlock (bloc, midi);
             }
+
+            joues += n;
+            juce::AudioBuffer<float> sortie (nombreDeSorties, n);
+
+            for (int c = 0; c < nombreDeSorties; ++c)
+                sortie.copyFrom (c, 0, tout, c, 0, n);
 
             return sortie;
         }
 
     private:
         te::Engine& engine;
-        int nombreDeSorties;
+        int nombreDeSorties, nombreDEntrees;
+        juce::int64 joues = 0;
         te::HostedAudioDeviceInterface& io { engine.getDeviceManager().getHostedAudioDeviceInterface() };
     };
 
@@ -3485,6 +3501,359 @@ public:
     }
 };
 
+//==============================================================================
+class EssaisPrises  : public juce::UnitTest
+{
+public:
+    EssaisPrises()  : juce::UnitTest ("Prises", "groovebox") {}
+
+    static juce::File dossierDEssai()
+    {
+        auto d = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("groovebox-essais-prises");
+        d.deleteRecursively();
+        d.createDirectory();
+        return d;
+    }
+
+    static std::unique_ptr<juce::AudioFormatReader> lireWav (const juce::File& f)
+    {
+        juce::WavAudioFormat wav;
+        return std::unique_ptr<juce::AudioFormatReader> (wav.createReaderFor (new juce::FileInputStream (f), true));
+    }
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+        using G = EvenementDePrise::Genre;
+
+        beginTest ("Écarts entre deux états du morceau : notés puis réappliqués à l'identique"_fr);
+        {
+            auto avant = morceauDeDemonstration();
+            auto apres = avant;
+            apres.tempo = 128.5;
+            apres.pistes[2].macros[3] = 0.9f;
+            apres.pistes[1].mute = true;
+            apres.pistes[4].effets[1] = Effet::parDefaut (TypeEffet::distorsion);
+            apres.scenes[1].clips[6] = Clip { "Nouveau", 2, { Note { 1.0, 0.5, 62, 90 } } };
+            apres.scenes[0].clips[2].reset();
+            apres.scenes[2].entree = EssaisEnchainements::enchainement (TypeEnchainement::filtre, 2);
+
+            const auto changements = ecarts::entre (avant.versJson(), apres.versJson());
+            logMessage ("  " + juce::String (changements.size()) + " changements");
+            expect (changements.size() > 0 && changements.size() < 40, "seuls les changements sont notés");
+            expect (ecarts::entre (avant.versJson(), avant.versJson()).isEmpty(), "rien de noté sans changement");
+
+            const auto refait = Morceau::depuisJson (ecarts::appliquer (avant.versJson(), changements));
+            expect (refait == apres, "réappliqués, ils redonnent exactement le morceau");
+
+            const auto json = juce::JSON::parse (juce::JSON::toString (juce::var (changements)));
+            expect (Morceau::depuisJson (ecarts::appliquer (avant.versJson(), json)) == apres, "aussi après un passage par le fichier");
+        }
+
+        beginTest ("Une prise note les gestes, calés sur les mesures, et enregistre le son de la sortie"_fr);
+        {
+            const auto racine = dossierDEssai();
+            CarteSimulee carte (engine, 2);
+            auto m = EssaisEnchainements::morceauDEnchainement();
+            m.scenes[0].clips[2] = EssaisEnchainements::clipTenu ("Do", 60);
+            m.scenes[1].clips[2] = EssaisEnchainements::clipTenu ("Sol", 67);
+            m.scenes[0].clips[1] = EssaisEnchainements::clipTenu ("Basse", 36);
+            Moteur moteur (engine, m, &banqueEssai());
+            const auto depart = moteur.getMorceau();
+            moteur.dossierDesPrises = [racine] { return racine; };
+            juce::File dossierTermine;
+            moteur.surPriseTerminee = [&] (const juce::File& d) { dossierTermine = d; };
+
+            expect (! moteur.priseEnCours());
+            expect (moteur.demarrerPrise(), "prise commencée");
+            expect (moteur.enLecture(), "à l'arrêt, la prise lance la lecture");
+            expectEquals (moteur.priseCourante()->nom, juce::String ("Prise 1"));
+            moteur.lancerScene (0);
+
+            juce::AudioBuffer<float> joue (2, 0);
+            auto jouer = [&] (double secondes)
+            {
+                auto morceau = EssaisEnchainements::jouerEtAvancer (moteur, carte, (int) (secondes * uneSeconde));
+                const int avant = joue.getNumSamples();
+                joue.setSize (2, avant + morceau.getNumSamples(), true, true);
+
+                for (int c = 0; c < 2; ++c)
+                    joue.copyFrom (c, avant, morceau, c, 0, morceau.getNumSamples());
+            };
+
+            jouer (2.5);
+            moteur.modifier ([] (Morceau& mm) { mm.pistes[2].volumeDb = -6.0f; }, "encodeur 2");
+            moteur.modifier ([] (Morceau& mm) { mm.pistes[2].volumeDb = -9.0f; }, "encodeur 2");
+            moteur.lancerScene (1, EssaisEnchainements::enchainement (TypeEnchainement::fondu, 1));
+            jouer (2.5);
+            moteur.filtreGlobal (0.3f);
+            moteur.filtreGlobal (0.5f);
+            moteur.modifier ([] (Morceau& mm) { mm.pistes[1].mute = true; });
+            moteur.jouerNote (3, 64, 100);
+            jouer (0.3);
+            moteur.relacherNote (3, 64);
+            moteur.arreterPiste (1);
+            jouer (1.0);
+            moteur.arreter();
+
+            expect (! moteur.priseEnCours(), "la prise s'arrête avec la lecture");
+            expect (dossierTermine.isDirectory(), "dossier de la prise");
+
+            auto prise = Prise::charger (dossierTermine.getChildFile ("prise.json"));
+            expect (prise.has_value(), "journal relu");
+
+            if (! prise)
+                return;
+
+            expect (prise->morceauDeDepart == depart, "le morceau de départ est gardé tel quel");
+            expectWithinAbsoluteError (prise->debut, moteur.tempsDeLaMesure1(), 1.0e-9, "la prise commence à la mesure 1");
+            expectWithinAbsoluteError (prise->dureeEnSecondes(), 6.3, 0.2, "durée");
+
+            juce::StringArray genres;
+
+            for (auto& e : prise->evenements)
+                genres.add (juce::String ((int) e.genre));
+
+            const juce::StringArray attendus { juce::String ((int) G::scene), juce::String ((int) G::reglages), juce::String ((int) G::reglages),
+                                               juce::String ((int) G::scene), juce::String ((int) G::filtreGlobal), juce::String ((int) G::filtreGlobal),
+                                               juce::String ((int) G::reglages), juce::String ((int) G::note), juce::String ((int) G::note), juce::String ((int) G::arret) };
+            expectEquals (genres.joinIntoString (" "), attendus.joinIntoString (" "), "les gestes, dans l'ordre");
+
+            if (prise->evenements.size() == 10)
+            {
+                const auto& e = prise->evenements;
+                expect (e[0].scene == 0 && e[0].piste == -1 && e[0].cale && std::abs (*e[0].cale - moteur.tempsDeLaMesure1()) < 1.0e-9, "scène 1 lancée à la mesure 1");
+                expect (e[3].cale && std::abs (*e[3].cale - (moteur.tempsDeLaMesure1() + 8.0)) < 1.0e-6, "scène 2 calée sur la mesure 3 : " + juce::String (e[3].cale.value_or (-1.0)));
+                expect (e[3].enchainement && e[3].enchainement->type == TypeEnchainement::fondu, "avec son enchaînement");
+                expect (e[3].temps > moteur.tempsDeLaMesure1() + 4.0 && e[3].temps < *e[3].cale, "noté au moment du geste");
+                expect (juce::JSON::toString (e[1].changements).contains ("pistes/2/volumeDb"), "le réglage tourné est noté");
+                expectWithinAbsoluteError (e[4].valeur, 0.3f, 1.0e-6f);
+                expect (e[7].piste == 3 && (int) e[7].valeur == 64 && e[7].velocite == 100 && e[8].velocite == 0, "note jouée puis relâchée");
+                expect (e[9].piste == 1, "arrêt de la piste");
+
+                // Réappliqués dans l'ordre, les réglages donnent l'état de la fin
+                auto json = prise->morceauDeDepart.versJson();
+
+                for (auto& ev : e)
+                    if (ev.genre == G::reglages)
+                        json = ecarts::appliquer (json, ev.changements);
+
+                expect (Morceau::depuisJson (json) == moteur.getMorceau(), "les réglages notés suffisent à retrouver le morceau");
+            }
+
+            // Le son : sortie.wav, identique à ce qui est sorti sur 1-2
+            auto lecteur = lireWav (dossierTermine.getChildFile ("sortie.wav"));
+            expect (lecteur != nullptr, "sortie.wav");
+            expect (! dossierTermine.getChildFile ("micros.wav").exists(), "pas de micros sans entrée");
+
+            if (lecteur != nullptr)
+            {
+                expectEquals ((int) lecteur->numChannels, 2);
+                expectEquals ((int) lecteur->bitsPerSample, 24);
+                juce::AudioBuffer<float> fichier (2, (int) lecteur->lengthInSamples);
+                lecteur->read (&fichier, 0, fichier.getNumSamples(), 0, true, true);
+                logMessage ("  sortie.wav : " + juce::String (fichier.getNumSamples() / frequence, 2) + " s, joué " + juce::String (joue.getNumSamples() / frequence, 2) + " s");
+                expect (std::abs (fichier.getNumSamples() - joue.getNumSamples()) < uneSeconde / 10, "toute la prise est dans le fichier");
+
+                // Recaler le fichier sur ce qui a été joué, puis comparer
+                int decalage = -1;
+                const int repere = uneSeconde;
+
+                for (int d = 0; d < uneSeconde / 4 && decalage < 0; ++d)
+                {
+                    bool pareil = true;
+
+                    for (int i = 0; i < 512 && pareil; ++i)
+                        pareil = std::abs (fichier.getSample (0, repere + i) - joue.getSample (0, repere + i + d)) < 1.0e-4f;
+
+                    if (pareil)
+                        decalage = d;
+                }
+
+                expect (decalage >= 0, "le fichier retrouve le son joué");
+
+                if (decalage >= 0)
+                {
+                    float ecart = 0.0f;
+
+                    for (int i = 0; i + decalage < joue.getNumSamples() && i < fichier.getNumSamples(); ++i)
+                        ecart = juce::jmax (ecart, std::abs (fichier.getSample (0, i) - joue.getSample (0, i + decalage)));
+
+                    logMessage ("  décalage " + juce::String (decalage) + " échantillons, écart maximal "_fr + juce::String (ecart, 7));
+                    expect (ecart < 1.0e-4f, "même son, à la précision du 24 bits près");
+                    expect (niveauEfficace (fichier, 0) > 0.005f, "et ce n'est pas du silence");
+                }
+            }
+        }
+
+        beginTest ("En pleine lecture, la prise part de la mesure en cours ; les micros ont leur fichier"_fr);
+        {
+            const auto racine = dossierDEssai();
+            CarteSimulee carte (engine, 2, 2);
+            carte.entree = [] (int canal, juce::int64 i) { return 0.25f * (float) std::sin (juce::MathConstants<double>::twoPi * (canal == 0 ? 220.0 : 330.0) * (double) i / frequence); };
+            auto m = EssaisEnchainements::morceauDEnchainement();
+            m.scenes[0].clips[2] = EssaisEnchainements::clipTenu ("Do", 60);
+            Moteur moteur (engine, m, &banqueEssai());
+            moteur.dossierDesPrises = [racine] { return racine; };
+            expectEquals (moteur.getEntreeDesMicros().canauxDisponibles(), 2, "deux entrées ouvertes");
+
+            moteur.lancerScene (0);
+            EssaisEnchainements::jouerEtAvancer (moteur, carte, 5 * uneSeconde);
+            expect (moteur.demarrerPrise());
+            expectEquals (moteur.priseCourante()->scenesDeDepart[2], 0, "la scène qui joue est notée au départ");
+            expectWithinAbsoluteError (moteur.priseCourante()->debut, moteur.tempsDeLaMesure1() + 8.0, 1.0e-9, "début de la mesure 3, en cours");
+            EssaisEnchainements::jouerEtAvancer (moteur, carte, 2 * uneSeconde);
+            const auto dossier = moteur.arreterPrise();
+            expect (moteur.enLecture(), "arrêter la prise ne coupe pas la musique");
+            expect (dossier.has_value());
+
+            if (! dossier)
+                return;
+
+            auto prise = Prise::charger (dossier->getChildFile ("prise.json"));
+            expect (prise && prise->avecMicros);
+            auto micros = lireWav (dossier->getChildFile ("micros.wav"));
+            expect (micros != nullptr, "micros.wav");
+
+            if (micros != nullptr)
+            {
+                juce::AudioBuffer<float> audio (2, (int) micros->lengthInSamples);
+                micros->read (&audio, 0, audio.getNumSamples(), 0, true, true);
+                // Le contenu n'est pas vérifiable ici : la carte simulée donne au moteur la même mémoire pour l'entrée et la sortie,
+                // si bien que la musique recouvre l'entrée avant sa lecture (une vraie carte les sépare). Essai du contenu plus bas.
+                expectWithinAbsoluteError ((double) audio.getNumSamples() / frequence, 2.0, 0.1, "deux secondes de micros");
+            }
+
+            // Une seconde prise : numérotée à la suite, dans son propre dossier
+            expect (moteur.demarrerPrise());
+            expectEquals (moteur.priseCourante()->nom, juce::String ("Prise 2"));
+            EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde / 2);
+            const auto seconde = moteur.arreterPrise();
+            expect (seconde && *seconde != *dossier);
+
+            // Changer de morceau termine une prise en cours
+            expect (moteur.demarrerPrise());
+            moteur.chargerMorceau (m);
+            expect (! moteur.priseEnCours(), "ouvrir un morceau termine la prise");
+            expectEquals ((int) racine.findChildFiles (juce::File::findDirectories, false).size(), 3);
+        }
+
+        beginTest ("Les micros : chaque entrée sur son canal, sans perte"_fr);
+        {
+            const auto racine = dossierDEssai();
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, EssaisEnchainements::morceauDEnchainement(), &banqueEssai());
+            auto plugin = moteur.getEdit().getPluginCache().createNewPlugin (EnregistreurDeSortiePlugin::xmlTypeName, {});
+            auto* sortie = dynamic_cast<EnregistreurDeSortiePlugin*> (plugin.get());
+            expect (sortie != nullptr);
+            EnregistreurDEntree entree;
+            EnregistrementAudio enregistrement (*sortie, entree);
+            expect (enregistrement.demarrer (racine, frequence, true));
+
+            juce::AudioBuffer<float> entrees (2, 128), sorties (2, 128);
+
+            for (juce::int64 debut = 0; debut < 2 * uneSeconde; debut += 128)
+            {
+                for (int c = 0; c < 2; ++c)
+                    for (int i = 0; i < 128; ++i)
+                        entrees.setSample (c, i, 0.25f * (float) std::sin (juce::MathConstants<double>::twoPi * (c == 0 ? 220.0 : 330.0) * (double) (debut + i) / frequence));
+
+                sorties.applyGain (0.0f);
+                sorties.setSample (0, 0, 1.0f);
+                entree.audioDeviceIOCallbackWithContext (entrees.getArrayOfReadPointers(), 2, sorties.getArrayOfWritePointers(), 2, 128, {});
+                expectEquals (sorties.getMagnitude (0, 128), 0.0f);
+            }
+
+            enregistrement.arreter();
+            auto micros = lireWav (racine.getChildFile ("micros.wav"));
+            expect (micros != nullptr);
+
+            if (micros != nullptr)
+            {
+                juce::AudioBuffer<float> audio (2, (int) micros->lengthInSamples);
+                micros->read (&audio, 0, audio.getNumSamples(), 0, true, true);
+                expectEquals (audio.getNumSamples(), 2 * uneSeconde, "aucun échantillon perdu");
+                expectWithinAbsoluteError (niveauEfficace (audio, 0, uneSeconde, uneSeconde + 4800), 0.177f, 0.005f, "le niveau du micro de gauche");
+                // frequenceMesuree double le compte (prévue pour un bip qui sonne la moitié du temps) : on divise par deux
+                const auto f1 = frequenceMesuree (audio, 0, uneSeconde, uneSeconde + 24000) / 2.0, f2 = frequenceMesuree (audio, 1, uneSeconde, uneSeconde + 24000) / 2.0;
+                expect (std::abs (f1 - 220.0) < 3.0 && std::abs (f2 - 330.0) < 3.0, "chaque micro sur son canal : " + juce::String (f1, 1) + " et " + juce::String (f2, 1) + " Hz");
+            }
+        }
+
+        beginTest ("L'onglet Prises montre les prises du morceau"_fr);
+        {
+            const auto racine = dossierDEssai();
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, EssaisEnchainements::morceauDEnchainement(), &banqueEssai());
+            moteur.dossierDesPrises = [racine] { return racine; };
+
+            for (int k = 0; k < 2; ++k)
+            {
+                moteur.demarrerPrise();
+                EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde / 2);
+                moteur.arreter();
+            }
+
+            PagePrises page (engine, moteur);
+            page.setSize (980, 640);
+            moteur.demarrerPrise();
+            laisserTravailler (400);
+            auto image = page.createComponentSnapshot (page.getLocalBounds());
+            const auto fichier = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("groovebox-onglet-prises.png");
+            fichier.deleteFile();
+            juce::FileOutputStream flux (fichier);
+            juce::PNGImageFormat().writeImageToStream (image, flux);
+            logMessage ("  image de l'onglet : " + fichier.getFullPathName());
+            moteur.arreter();
+            expect (image.isValid());
+        }
+
+        beginTest ("Sans dossier de prises, rien ne s'enregistre"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, EssaisEnchainements::morceauDEnchainement(), &banqueEssai());
+            expect (! moteur.demarrerPrise());
+            expect (! moteur.priseEnCours() && ! moteur.enLecture());
+        }
+
+        beginTest ("Push : Record commence et termine la prise, son bouton clignote en rouge"_fr);
+        {
+            using T = Evenement::Type;
+            const auto racine = dossierDEssai();
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, EssaisEnchainements::morceauDEnchainement(), &banqueEssai());
+            moteur.dossierDesPrises = [racine] { return racine; };
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            auto bouton = [&] (Bouton b) { surface.recevoir ({ T::bouton, (int) b, 127, true }); surface.recevoir ({ T::bouton, (int) b, 0, false }); };
+
+            expectEquals (pilote.calculerEtat().boutons[(size_t) Bouton::record], palette::grisFonce);
+            bouton (Bouton::record);
+            expect (moteur.priseEnCours(), "Record : prise commencée");
+
+            bool rouge = false;
+
+            for (int i = 0; i < 12 && ! rouge; ++i)
+            {
+                rouge = pilote.calculerEtat().boutons[(size_t) Bouton::record] == palette::rouge;
+                juce::Thread::sleep (100);
+            }
+
+            expect (rouge, "le bouton Record passe au rouge");
+            EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde);
+
+            juce::Image image (juce::Image::RGB, EtatSurface::largeurEcran, EtatSurface::hauteurEcran, true);
+            pilote.dessinerEcran (image);
+            expect (image.getPixelAt (EtatSurface::largeurEcran - 280, 24).getRed() > 200, "l'écran montre la prise en rouge");
+
+            bouton (Bouton::record);
+            expect (! moteur.priseEnCours(), "second appui : prise terminée");
+            expect (moteur.enLecture());
+            expectEquals ((int) racine.findChildFiles (juce::File::findDirectories, false).size(), 1);
+        }
+    }
+};
+
 static EssaisModele essaisModele;
 static EssaisSorties essaisSorties;
 static EssaisHorloge essaisHorloge;
@@ -3497,6 +3866,7 @@ static EssaisSurge essaisSurge;
 static EssaisMelodies essaisMelodies;
 static EssaisEffets essaisEffets;
 static EssaisEnchainements essaisEnchainements;
+static EssaisPrises essaisPrises;
 
 } // namespace groovebox
 

@@ -3,11 +3,12 @@
 #include "PageJeu.h"
 #include "PageCarteSon.h"
 #include "PageSession.h"
+#include "PagePrises.h"
 
 namespace groovebox
 {
 
-/** La fenêtre : onglets « Session », « Jeu » et « Carte son ». Barre d'espace : lecture et arrêt ; T : Tap Tempo. */
+/** La fenêtre : onglets « Session », « Jeu », « Prises » et « Carte son ». Barre d'espace : lecture et arrêt ; T : Tap Tempo. */
 class FenetrePrincipale  : public juce::Component
 {
 public:
