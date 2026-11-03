@@ -24,11 +24,15 @@ public:
     EtatSurface calculerEtat() const;
     void dessinerEcran (juce::Image&) const;
 
-    enum class Page { mix, clic, device, generateur, commun, variation, browse };
+    enum class Page { mix, clic, device, generateur, commun, variation, browse, gamme, macros };
     enum class Mode { session, note };
     Page getPage() const                    { return page; }
     Mode getMode() const                    { return mode; }
     int getPadChoisi() const                { return padChoisi; }
+
+    /** Jeu en gamme : note MIDI d'un pad (ligne 0 en bas) sur une piste de synthé. */
+    int noteDuPad (int ligne, int colonne) const;
+    int getOctave() const                   { return octaves[(size_t) pisteChoisie]; }
 
     /** Pas à pas : longueur d'un pas en temps du moteur, et nombre de pas du clip visé. */
     double longueurDUnPas() const;
@@ -67,6 +71,8 @@ private:
     Mode mode = Mode::session;
     int premiereScene = 0, pisteChoisie = 0, padChoisi = 0, pageDePas = 0;
     std::array<bool, 16> padsAppuyes {};
+    std::array<int, 64> notesTenues {};                     ///< Jeu en gamme : note jouée par chaque pad, -1 sinon
+    std::array<int, nombreDePistes> octaves { 2, 1, 3, 4, 3, 2, 3, 4 };
     juce::StringArray categoriesDuNavigateur;
     int categorieChoisie = 0, sonChoisi = 0;
     std::optional<std::pair<int, int>> caseChoisie;
@@ -75,10 +81,11 @@ private:
     bool copieFaite = false;
     std::array<bool, nombreEncodeurs> touches {};
     std::array<int, nombreEncodeurs> crans {};
-    std::array<Reglage, 8> pageClic, pageMix, pageDevice, pageBrowse, pageEuclide, pageCartes, pageCommun, pageVariation;
+    std::array<Reglage, 8> pageClic, pageMix, pageDevice, pageBrowse, pageEuclide, pageCartes, pageCommun, pageVariation, pageGamme, pageMacros;
     int voixEuclidienne = 0;
     bool varierEnDupliquant = false;
     Annonce annonce;
+    std::shared_ptr<bool> vivant = std::make_shared<bool> (true);
     juce::Image ecran { juce::Image::RGB, EtatSurface::largeurEcran, EtatSurface::hauteurEcran, true };
 
     const std::array<Reglage, 8>& reglages() const
@@ -91,6 +98,8 @@ private:
             case Page::browse:  return pageBrowse;
             case Page::commun:  return pageCommun;
             case Page::variation: return pageVariation;
+            case Page::gamme:   return pageGamme;
+            case Page::macros:  return pageMacros;
             case Page::generateur:
             {
                 const auto* g = generateurVise();
@@ -111,6 +120,7 @@ private:
     juce::StringArray sonsDeLaCategorie() const;
     void choisirDansLeNavigateur();
     void appuyerPadDeNote (int ligne, int colonne, int velocite);
+    void preecouterLeSynthe();
     void basculerPas (int pas);
     bool shift() const;
     bool tenu (Bouton b) const                      { return surface.estAppuye (b); }

@@ -202,14 +202,17 @@ void BatteriePlugin::rendre (juce::AudioBuffer<float>& sortie, int debut, int no
             droite *= g * remontee;
         }
 
+        // Niveau de sortie du kit : de la marge pour la grosse caisse et les coups simultanés
+        constexpr float niveauDeSortie = 0.5f;
+
         if (canaux > 1)
         {
-            sortie.addSample (0, i, gauche * 1.41f);
-            sortie.addSample (1, i, droite * 1.41f);
+            sortie.addSample (0, i, gauche * niveauDeSortie);
+            sortie.addSample (1, i, droite * niveauDeSortie);
         }
         else if (canaux == 1)
         {
-            sortie.addSample (0, i, 0.5f * (gauche + droite) * 1.41f);
+            sortie.addSample (0, i, 0.5f * (gauche + droite) * niveauDeSortie);
         }
     }
 }

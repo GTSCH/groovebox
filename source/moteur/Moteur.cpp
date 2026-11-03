@@ -42,6 +42,17 @@ namespace
         }
 
         m.assurerScenes (8);
+
+        // Pistes de synthé : un son de Surge par défaut, avec ses macros de départ
+        for (auto& p : m.pistes)
+            if (! p.estUneBatterie() && sonsDeSynthe::trouver (p.sonDeSynthe) == nullptr)
+            {
+                p.sonDeSynthe = sonsDeSynthe::sonParDefaut ((int) p.son);
+
+                if (auto son = sonsDeSynthe::trouver (p.sonDeSynthe))
+                    for (int k = 0; k < 8; ++k)
+                        p.macros[(size_t) k] = son->macros[(size_t) k].depart;
+            }
     }
 }
 
@@ -289,13 +300,47 @@ void Moteur::appliquerPistes (const Morceau& ancien, bool tout)
 
         pm.dossier->setName (p.nom);
 
-        // Batterie ou synthé provisoire : un seul des deux est actif ; les notes traversent celui qui est éteint
+        // Batterie, Surge XT ou synthé provisoire : un seul est actif ; les notes traversent ceux qui sont éteints
         const bool batterie = p.estUneBatterie();
+        const auto* son = sonsDeSynthe::trouver (p.sonDeSynthe);
 
         for (int k = 0; k < 2; ++k)
         {
+            bool surgePret = false;
+
+            // Surge sur la voix A seulement : la voix B recevra le sien avec les enchaînements (étape 8)
+            if (k == 0 && ! batterie && son != nullptr && surge::trouver (engine))
+            {
+                const bool nouveau = pm.surges[(size_t) k] == nullptr;
+
+                if (nouveau)
+                {
+                    pm.surges[(size_t) k] = surge::creer (*edit);
+
+                    if (pm.surges[(size_t) k] != nullptr)
+                    {
+                        pm.voix[(size_t) k]->pluginList.insertPlugin (pm.surges[(size_t) k], 0, nullptr);
+                        pm.pilotesSurge[(size_t) k] = std::make_unique<PiloteDeSurge> (*pm.surges[(size_t) k]);
+                    }
+                }
+
+                if (auto& pilote = pm.pilotesSurge[(size_t) k])
+                {
+                    if (nouveau || tout || p.sonDeSynthe != a.sonDeSynthe || p.son != a.son)
+                        pilote->appliquerSon (*son, p.macros);
+                    else if (p.macros != a.macros)
+                        pilote->appliquerMacros (*son, p.macros);
+
+                    surgePret = true;
+                }
+            }
+
+            // La voix B garde les réglages mais reste éteinte : elle ne servira qu'aux enchaînements (étape 8)
+            if (pm.surges[(size_t) k] != nullptr)
+                pm.surges[(size_t) k]->setEnabled (surgePret && k == 0);
+
             pm.instruments[(size_t) k]->son = (int) p.son;
-            pm.instruments[(size_t) k]->setEnabled (! batterie);
+            pm.instruments[(size_t) k]->setEnabled (! batterie && ! surgePret);
             pm.batteries[(size_t) k]->setEnabled (batterie);
 
             if (batterie && (tout || ! (p.kit == a.kit) || p.son != a.son))
@@ -406,6 +451,12 @@ void Moteur::appliquerCase (int piste, int scene)
     }
 
     existant->setLoopRangeBeats ({ te::BeatPosition(), te::BeatDuration::fromBeats (longueur) });
+}
+
+bool Moteur::joueAvecSurge (int piste) const
+{
+    const auto& pm = pistesMoteur[(size_t) piste];
+    return pm.surges[0] != nullptr && pm.surges[0]->isEnabled();
 }
 
 std::vector<double> Moteur::debutsJoues (int piste, int scene) const

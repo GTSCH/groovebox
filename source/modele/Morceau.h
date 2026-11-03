@@ -3,6 +3,7 @@
 #include "Mesure.h"
 #include "Kit.h"
 #include "Generateurs.h"
+#include "Gamme.h"
 
 namespace groovebox
 {
@@ -66,7 +67,9 @@ struct Piste
     float panoramique = 0.0f;       ///< -1 à gauche, 1 à droite
     bool mute = false, solo = false;
     std::optional<float> swing;     ///< Propre à la piste ; sinon, le swing du morceau
-    Kit kit;                        ///< Utilisé quand le son est Batterie ou Percussions
+    Kit kit;
+    juce::String sonDeSynthe;       ///< Son de Surge XT (pistes de synthé), par son nom
+    std::array<float, 8> macros { 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };                        ///< Utilisé quand le son est Batterie ou Percussions
 
     bool estUneBatterie() const     { return son == SonProvisoire::batterie || son == SonProvisoire::percussions; }
     bool operator== (const Piste&) const = default;
@@ -101,6 +104,7 @@ struct Morceau
     float musiqueDansCasqueDb = 0.0f; ///< Niveau de la musique dans le casque du batteur
     float volumeGeneralDb = 0.0f;     ///< Volume de la sortie principale (sono), sans effet sur le casque
     Calage calage = Calage::mesure;
+    Gamme gamme;                      ///< Do mineur par défaut, comme la démo
     float swing = 0.0f;               ///< 0 à 0,75 : retard des double-croches du contretemps (encodeur Swing)
     Variation variation;              ///< Réglages de « dupliquer et varier »
     juce::uint32 prochaineGraine = 2; ///< Graine donnée à la prochaine variation

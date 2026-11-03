@@ -13,6 +13,7 @@
 #include "push/EcranPush.h"
 #include "push/PushMidi.h"
 #include "app/Simulateur.h"
+#include "moteur/SonsDeSynthe.h"
 
 namespace groovebox
 {
@@ -959,11 +960,12 @@ public:
             auto padDeNote = [&] (int ligne, int colonne, int v = 100) { surface.recevoir (Evenement::pad (ligne, colonne, v)); surface.recevoir (Evenement::pad (ligne, colonne, 0)); };
             auto pas = [&] (int n) { padDeNote (7 - n / 8, n % 8); };
 
-            // Piste 2 (basse) : pas de mode Note avant l'étape 6
+            // Piste 2 (basse) : le mode Note joue en gamme
             surface.recevoir ({ T::bouton, premierBoutonDuBas + 1, 1, true });
             surface.recevoir ({ T::bouton, premierBoutonDuBas + 1, 0, false });
             bouton (Bouton::note);
-            expect (pilote.getMode() == Pilote::Mode::session, "pas de mode Note sur la basse pour l'instant"_fr);
+            expect (pilote.getMode() == Pilote::Mode::note, "mode Note en gamme sur la basse"_fr);
+            bouton (Bouton::session);
 
             surface.recevoir ({ T::bouton, premierBoutonDuBas, 1, true });
             surface.recevoir ({ T::bouton, premierBoutonDuBas, 0, false });
@@ -1893,6 +1895,276 @@ public:
     }
 };
 
+//==============================================================================
+class EssaisGammes  : public juce::UnitTest
+{
+public:
+    EssaisGammes()  : juce::UnitTest ("Gammes", "groovebox") {}
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+
+        beginTest ("Notes des gammes");
+        {
+            Gamme doMajeur { 0, Gamme::Mode::majeur };
+            expectEquals (doMajeur.note (0, 3), 48, "do 3 = MIDI 48"_fr);
+            expectEquals (doMajeur.note (7, 3), 60, "le 8e degré monte d'une octave"_fr);
+            expectEquals (doMajeur.note (-1, 3), 47, "en dessous : si 2"_fr);
+            Gamme laMineur { 9, Gamme::Mode::mineur };
+            expectEquals (laMineur.note (2, 2), 48, "la mineur : 3e degré = do"_fr);
+            expect (laMineur.contient (60) && ! laMineur.contient (61));
+            Gamme penta { 2, Gamme::Mode::pentatoniqueMineure };
+            expectEquals (penta.nombreDeDegres(), 5);
+            expectEquals (penta.note (5, 0), 26, "ré pentatonique : la 6e note est le ré suivant"_fr);
+            expectEquals (Gamme { 7, Gamme::Mode::dorien }.nom(), juce::String ("Sol dorien"));
+
+            for (int f = 0; f < 12; ++f)
+                for (int mode = 0; mode < 7; ++mode)
+                {
+                    Gamme g { f, (Gamme::Mode) mode };
+
+                    for (int d = -10; d < 30; ++d)
+                        expect (g.contient (g.note (d, 3)), g.nom() + " : degré " + juce::String (d));
+                }
+        }
+
+        beginTest ("Jeu en gamme au Push : aucune fausse note, fondamentales en couleur"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+            m.gamme = { 2, Gamme::Mode::dorien };
+            Moteur moteur (engine, m, &banqueEssai());
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            auto bouton = [&] (Bouton b) { surface.recevoir ({ Evenement::Type::bouton, (int) b, 1, true }); surface.recevoir ({ Evenement::Type::bouton, (int) b, 0, false }); };
+
+            bouton ((Bouton) (premierBoutonDuBas + 1));    // la basse
+            bouton (Bouton::note);
+            expect (pilote.getMode() == Pilote::Mode::note);
+
+            const auto gamme = moteur.getMorceau().gamme;
+            std::set<int> notes;
+
+            for (int ligne = 0; ligne < 8; ++ligne)
+                for (int colonne = 0; colonne < 8; ++colonne)
+                {
+                    const int note = pilote.noteDuPad (ligne, colonne);
+                    expect (gamme.contient (note), "pad hors gamme"_fr);
+                    notes.insert (note);
+                    const auto attendu = palette::indexDePiste (1, gamme.estFondamentale (note) ? 3 : 1);
+                    expectEquals (pilote.calculerEtat().pads[(size_t) (ligne * 8 + colonne)], attendu);
+                }
+
+            expectEquals (pilote.noteDuPad (0, 0), gamme.note (0, pilote.getOctave()), "en bas à gauche : la fondamentale"_fr);
+            expectEquals (pilote.noteDuPad (1, 0), pilote.noteDuPad (0, 3), "une rangée plus haut : une quarte (3 degrés)"_fr);
+            expectEquals ((int) notes.size(), 29, "8 sur 8 en quartes : 29 degrés, de la fondamentale à 4 octaves plus haut"_fr);
+
+            const int avant = pilote.noteDuPad (0, 0);
+            bouton (Bouton::octaveHaut);
+            expectEquals (pilote.noteDuPad (0, 0), avant + 12);
+
+            // Un pad joue sa note (son provisoire de la basse en attendant Surge)
+            carte.jouer (256);
+            surface.recevoir (Evenement::pad (0, 0, 110));
+            expect (crete (carte.jouer (9600), 0) > 0.01f, "la note sonne"_fr);
+            expectEquals (pilote.calculerEtat().pads[0], palette::blanc, "pad tenu en blanc"_fr);
+            surface.recevoir (Evenement::pad (0, 0, 0));
+
+            // Scale : la fondamentale change pour tout le morceau
+            bouton (Bouton::scale);
+            expect (pilote.getPage() == Pilote::Page::gamme);
+            surface.recevoir ({ Evenement::Type::encodeurTourne, 0, 8, false });
+            expectEquals (moteur.getMorceau().gamme.fondamentale, 3);
+            surface.recevoir ({ Evenement::Type::encodeurTourne, 1, -8, false });
+            expect (moteur.getMorceau().gamme.mode == Gamme::Mode::mineur);
+        }
+    }
+};
+
+//==============================================================================
+class EssaisSurge  : public juce::UnitTest
+{
+public:
+    EssaisSurge()  : juce::UnitTest ("Surge XT", "groovebox") {}
+
+    /** Brillance : part de l'énergie dans les variations rapides du signal. Plus c'est haut, plus le son est brillant. */
+    static double brillance (const juce::AudioBuffer<float>& audio, int debut, int fin)
+    {
+        double energie = 0.0, variations = 0.0;
+        auto d = audio.getReadPointer (0);
+
+        for (int i = debut + 1; i < fin; ++i)
+        {
+            energie += d[i] * d[i];
+            variations += (d[i] - d[i - 1]) * (d[i] - d[i - 1]);
+        }
+
+        return energie > 0.0 ? variations / energie : 0.0;
+    }
+
+    /** Joue une note d'une seconde sur la basse avec un son donné, macros de départ. */
+    static juce::AudioBuffer<float> jouer (te::Engine& engine, const juce::String& son, int note = 48)
+    {
+        CarteSimulee carte (engine, 2);
+        auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+        m.clic.actif = false;
+        m.pistes[1].sonDeSynthe = son;
+
+        if (auto s = sonsDeSynthe::trouver (son))
+            for (int k = 0; k < 8; ++k)
+                m.pistes[1].macros[(size_t) k] = s->macros[(size_t) k].depart;
+
+        Moteur moteur (engine, m, &banqueEssai());
+        carte.jouer (2048);
+        moteur.jouerNote (1, note, 100);
+        auto audio = carte.jouer (uneSeconde);
+        moteur.relacherNote (1, note);
+        return audio;
+    }
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+
+        surge::autoriser (true);
+
+        if (! surge::trouver (engine))
+        {
+            logMessage ("  Surge XT n'est pas installé : essais de Surge sautés"_fr);
+            surge::autoriser (false);
+            return;
+        }
+
+        beginTest ("Les pistes de synthé jouent avec Surge XT, la voix B reste éteinte"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDeDemonstration(), &banqueEssai());
+
+            for (int p = 0; p < nombreDePistes; ++p)
+                expect (moteur.joueAvecSurge (p) == ! moteur.getMorceau().pistes[(size_t) p].estUneBatterie(), moteur.getMorceau().pistes[(size_t) p].nom);
+
+            expectEquals (moteur.getMorceau().pistes[1].sonDeSynthe, juce::String ("Sub dub"), "son par défaut de la basse"_fr);
+        }
+
+        beginTest ("Les 24 sons de départ s'appliquent sans réglage manquant"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)), &banqueEssai());
+            auto* pilote = moteur.piloteSurge (1);
+            expect (pilote != nullptr);
+            expectEquals ((int) sonsDeSynthe::tous().size(), 24);
+            expectEquals (sonsDeSynthe::styles().size(), 8);
+
+            if (pilote != nullptr)
+                for (auto& son : sonsDeSynthe::tous())
+                {
+                    std::array<float, 8> macros {};
+
+                    for (int k = 0; k < 8; ++k)
+                        macros[(size_t) k] = son.macros[(size_t) k].depart;
+
+                    expect (pilote->appliquerSon (son, macros), son.nom);
+
+                    for (auto& macro : son.macros)
+                        for (auto& l : macro.liaisons)
+                            expect (pilote->valeurPourNombre (l.parametre, l.de).has_value(), son.nom + " : " + l.parametre);
+                }
+        }
+
+        beginTest ("Une macro parcourt sa plage : l'ouverture de l'acid va de 120 à 3000 Hz");
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+            m.pistes[1].sonDeSynthe = "Acid 303";
+            Moteur moteur (engine, m, &banqueEssai());
+            auto* pilote = moteur.piloteSurge (1);
+            expectEquals (pilote->texteActuel ("A Filter 1 Type"), juce::String ("LP Diode Ladder"));
+
+            moteur.modifier ([] (Morceau& mm) { mm.pistes[1].macros[0] = 0.0f; });
+            expectWithinAbsoluteError (pilote->texteActuel ("A Filter 1 Cutoff").getDoubleValue(), 120.0, 6.0);
+            moteur.modifier ([] (Morceau& mm) { mm.pistes[1].macros[0] = 1.0f; });
+            expectWithinAbsoluteError (pilote->texteActuel ("A Filter 1 Cutoff").getDoubleValue(), 3000.0, 100.0);
+            moteur.modifier ([] (Morceau& mm) { mm.pistes[1].macros[0] = 0.5f; });
+            const auto milieu = pilote->texteActuel ("A Filter 1 Cutoff").getDoubleValue();
+            expect (milieu > 500.0 && milieu < 700.0, "à mi-course, à mi-chemin à l'oreille (en demi-tons) : "_fr + juce::String (milieu));
+        }
+
+        beginTest ("Un son de Surge joue, et une basse sub est plus ronde qu'une reese");
+        {
+            const auto sub = jouer (engine, "Sub dub");
+            const auto reese = jouer (engine, "Reese");
+            expect (niveauEfficace (sub, 0, 4800, 24000) > 0.02f, "la basse sub sonne"_fr);
+            expect (niveauEfficace (reese, 0, 4800, 24000) > 0.02f, "la reese sonne"_fr);
+            const auto bSub = brillance (sub, 4800, 24000), bReese = brillance (reese, 4800, 24000);
+            expect (bReese > 2.0 * bSub, "reese plus brillante : "_fr + juce::String (bReese, 5) + " contre " + juce::String (bSub, 5));
+            logMessage ("  brillance : sub " + juce::String (bSub, 5) + ", reese " + juce::String (bReese, 5));
+        }
+
+        beginTest ("Le son de synthé et ses macros se sauvegardent avec le morceau");
+        {
+            auto m = morceauDeDemonstration();
+            m.pistes[1].sonDeSynthe = "Reese";
+            m.pistes[1].macros[3] = 0.77f;
+            const auto relu = Morceau::depuisJson (juce::JSON::parse (juce::JSON::toString (m.versJson())));
+            expectEquals (relu.pistes[1].sonDeSynthe, juce::String ("Reese"));
+            expectWithinAbsoluteError (relu.pistes[1].macros[3], 0.77f, 1.0e-6f);
+        }
+
+        beginTest ("Au Push : Device montre les macros du son, Browse change de son");
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)), &banqueEssai());
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            auto bouton = [&] (Bouton b) { surface.recevoir ({ Evenement::Type::bouton, (int) b, 1, true }); surface.recevoir ({ Evenement::Type::bouton, (int) b, 0, false }); };
+
+            bouton ((Bouton) (premierBoutonDuBas + 1));
+            bouton (Bouton::device);
+            expect (pilote.getPage() == Pilote::Page::macros);
+            pilote.rafraichir();
+            const auto avant = moteur.getMorceau().pistes[1].macros[0];
+            surface.recevoir ({ Evenement::Type::encodeurTourne, 0, 20, false });
+            expectWithinAbsoluteError (moteur.getMorceau().pistes[1].macros[0], avant + 0.1f, 1.0e-5f, "macro 1 tournée"_fr);
+
+            bouton (Bouton::browse);
+            const int indexAcid = sonsDeSynthe::styles().indexOf ("Acid");
+
+            for (int i = 0; i < indexAcid; ++i)
+                surface.recevoir ({ Evenement::Type::encodeurTourne, 0, 8, false });
+
+            surface.recevoir ({ Evenement::Type::encodeurTourne, 1, 8, false });
+            expectEquals (moteur.getMorceau().pistes[1].sonDeSynthe, sonsDeSynthe::sonsDuStyle ("Acid")[1]);
+            expectEquals (moteur.piloteSurge (1)->texteActuel ("A Play Mode"), juce::String ("Mono (Fingered Portamento)"));
+            bouton (Bouton::undo);
+            expectEquals (moteur.getMorceau().pistes[1].sonDeSynthe, juce::String ("Sub dub"), "Undo rend le son d'avant"_fr);
+        }
+
+        beginTest ("Temps de calcul : la démo avec ses six synthés Surge");
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDeDemonstration(), &banqueEssai());
+            moteur.modifier ([] (Morceau& mm) { mm.clic.decompte = 0; });
+            moteur.lancerScene (4);
+            carte.jouer (128);
+            moteur.avancer();
+            carte.jouer (uneSeconde);
+
+            const auto debut = juce::Time::getMillisecondCounterHiRes();
+            const auto audio = carte.jouer (10 * uneSeconde);
+            const auto duree = juce::Time::getMillisecondCounterHiRes() - debut;
+            expect (niveauEfficace (audio, 0) > 0.01f, "la scène sonne"_fr);
+            expect (duree < 3000.0, "10 s de son calculées en " + juce::String (duree / 1000.0, 2) + " s");
+            logMessage ("  10 s de la scène Retour calculées en " + juce::String (duree / 1000.0, 2) + " s, soit "
+                        + juce::String (100.0 * duree / 10000.0, 1) + " % du temps réel, sur un seul fil"_fr);
+            logMessage ("  crête de la démo : " + juce::String (juce::Decibels::gainToDecibels (crete (audio, 0)), 1) + " dB");
+            expect (crete (audio, 0) < 1.0f, "la démo ne doit pas saturer : crête "_fr + juce::String (juce::Decibels::gainToDecibels (crete (audio, 0)), 1) + " dB");
+        }
+
+        surge::autoriser (false);
+    }
+};
+
 static EssaisModele essaisModele;
 static EssaisSorties essaisSorties;
 static EssaisHorloge essaisHorloge;
@@ -1900,12 +2172,15 @@ static EssaisPush essaisPush;
 static EssaisSession essaisSession;
 static EssaisBatterie essaisBatterie;
 static EssaisGenerateurs essaisGenerateurs;
+static EssaisGammes essaisGammes;
+static EssaisSurge essaisSurge;
 
 } // namespace groovebox
 
 int main()
 {
     juce::ScopedJuceInitialiser_GUI initialisationJuce;
+    groovebox::surge::autoriser (false);    // seuls les essais du synthé chargent Surge XT : les autres vont bien plus vite
 
     auto dossierEssai = juce::File::createTempFile ("groovebox-essais");
     dossierEssai.createDirectory();

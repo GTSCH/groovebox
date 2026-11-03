@@ -26,12 +26,15 @@ set (SOURCES_MOTEUR
     source/modele/Bibliotheque.cpp
     source/modele/Kit.cpp
     source/modele/Generateurs.cpp
+    source/modele/Gamme.cpp
     source/moteur/BipPlugin.cpp
     source/moteur/ClicPlugin.cpp
     source/moteur/InstrumentProvisoire.cpp
     source/moteur/BanqueDeSons.cpp
     source/moteur/BatteriePlugin.cpp
     source/moteur/FabriqueDeSons.cpp
+    source/moteur/Surge.cpp
+    source/moteur/SonsDeSynthe.cpp
     source/moteur/Moteur.cpp
     source/moteur/Reglages.cpp
     source/push/Controles.cpp

@@ -12,7 +12,9 @@ Groovebox logicielle pour Mac, pilotée au Push 2. Le cahier des charges est dan
 | 4. Session | Faite et validée à l'oreille le 03.11.2026 |
 | 5a. Batterie, pas à pas | Faite et validée à l'oreille le 03.11.2026 |
 | 5b. Générateurs rythmiques | Faite et validée à l'oreille le 03.11.2026 |
-| 6 à 11 | Pas commencées |
+| 6a. Surge XT, jeu en gamme | Faite et validée à l'oreille le 03.11.2026 |
+| 6b. Générateur de basses et mélodies | Pas commencée |
+| 7 à 11 | Pas commencées |
 
 ## Organisation
 
@@ -70,4 +72,8 @@ Fait tourner le moteur 60 secondes avec les bips actifs mais muets, puis écrit 
 - Push, mode Note (pistes batterie) : 4 sur 4 en bas à gauche pour les pads, les 4 rangées du haut pour 32 pas du pas à pas (Page gauche et droite au-delà). Device : réglages du pad choisi (encodeurs 1 à 6) et du kit (7 et 8). Browse : catégorie (encodeur 1) puis son ou kit (encodeur 2), avec préécoute.
 - Générateurs : un clip peut porter sa recette (`Clip::generateur`) ; ses notes sont recalculées à chaque réglage et à chaque changement de mesure ; Convert la retire (clip figé). Résolution : la double-croche, quelle que soit la mesure. Le swing ne touche pas les notes du morceau : le moteur retarde les double-croches du contretemps au moment d'écrire le clip.
 - Push, pages Device d'une piste batterie : Device fait tourner Pad, Générateur, Commun. Clip : réglages de Shift + Duplicate. Encodeur Swing : swing global ; avec Shift, celui de la piste.
-- Licences : Grids (carte de grooves) GPL v3 ; libusb LGPL 2.1 ; Tracktion Engine GPL v3, JUCE AGPL v3. Usage personnel, aucune contrainte.
+- Surge XT (GPL v3, installé à part dans /Library/Audio/Plug-Ins/VST3) : une instance sur la voix A de chaque piste de synthé, pilotée par ses paramètres nommés (`PiloteDeSurge`). Les 24 sons de départ (`SonsDeSynthe.cpp`) sont écrits en unités affichées par Surge (« LP 24 dB », Hz, ms...) ; groovebox retrouve la valeur interne en parcourant l'échelle de chaque réglage. Sans Surge, le son provisoire reprend la main. La voix B recevra son Surge avec les enchaînements.
+- Outils : `groovebox --parametres-surge` liste les 776 réglages de Surge ; `--options-surge "A Filter 1 Type,..."` donne leurs choix.
+- Gamme du morceau (bouton Scale) ; mode Note des synthés : un degré par colonne, une quarte par rangée, comme le Push d'Ableton.
+- Niveaux : la batterie sort à -6 dB (facteur 0,5), Surge a un volume général de -4 dB ; la démo culmine sous 0 dB. Limiteur de protection : étape 7.
+- Licences : Surge XT GPL v3 ; Grids (carte de grooves) GPL v3 ; libusb LGPL 2.1 ; Tracktion Engine GPL v3, JUCE AGPL v3. Usage personnel, aucune contrainte.

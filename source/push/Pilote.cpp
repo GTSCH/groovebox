@@ -1,4 +1,5 @@
 #include "Pilote.h"
+#include "moteur/SonsDeSynthe.h"
 
 namespace groovebox
 {
@@ -177,6 +178,24 @@ Pilote::Pilote (Moteur& m, Surface& s)  : moteur (m), surface (s)
     pageVariation[3] = { "Inversion", [variation] { return variation().inversion ? juce::String ("Oui") : juce::String ("Non"); }, [variation] { return variation().inversion ? 1.0f : 0.0f; },
                          [this] (int pas, bool) { if (auto c = crantsDiscrets (3, pas)) moteur.modifier ([=] (Morceau& m) { m.variation.inversion = c > 0; }, "variation 3"); }, premier };
 
+    // Page Gamme (bouton Scale) : fondamentale et mode du morceau
+    pageGamme[0] = { "Fondamentale", [this] { return Gamme::nomDeLaNote (moteur.getMorceau().gamme.fondamentale); },
+                     [this] { return (float) moteur.getMorceau().gamme.fondamentale / 11.0f; },
+                     [this] (int pas, bool) { if (auto c = crantsDiscrets (0, pas)) moteur.modifier ([=] (Morceau& m) { m.gamme.fondamentale = ((m.gamme.fondamentale + c) % 12 + 12) % 12; }, "gamme 0"); }, premier };
+    pageGamme[1] = { "Mode", [this] { return Gamme::nomsDesModes()[(int) moteur.getMorceau().gamme.mode]; },
+                     [this] { return (float) moteur.getMorceau().gamme.mode / 6.0f; },
+                     [this] (int pas, bool) { if (auto c = crantsDiscrets (1, pas)) moteur.modifier ([=] (Morceau& m) { m.gamme.mode = (Gamme::Mode) juce::jlimit (0, 6, (int) m.gamme.mode + c); }, "gamme 1"); }, premier };
+
+    notesTenues.fill (-1);
+
+    // Page Macros d'une piste de synthé : les 8 macros du son de Surge (noms mis à jour à chaque rafraîchissement)
+    for (int i = 0; i < 8; ++i)
+        pageMacros[(size_t) i] = { {}, [this, i, pourcent] { return pourcent (moteur.getMorceau().pistes[(size_t) pisteChoisie].macros[(size_t) i]); },
+                                   [this, i] { return moteur.getMorceau().pistes[(size_t) pisteChoisie].macros[(size_t) i]; },
+                                   [this, i] (int pas, bool fin) { moteur.modifier ([=, p = pisteChoisie] (Morceau& m) { auto& v = m.pistes[(size_t) p].macros[(size_t) i];
+                                                                       v = juce::jlimit (0.0f, 1.0f, v + (float) pas * (fin ? 0.001f : 0.005f)); }, "macro " + juce::String (i)); },
+                                   palette::couleurDePiste (0) };
+
     // Page Browse : catégorie, puis son (ou kit entier) pour le pad choisi, avec préécoute
     pageBrowse[0] = { "Catégorie"_fr, [this] { return categoriesDuNavigateur[categorieChoisie]; }, [this] { return categoriesDuNavigateur.isEmpty() ? 0.0f : (float) categorieChoisie / (float) juce::jmax (1, categoriesDuNavigateur.size() - 1); },
                       [this] (int pas, bool) { if (auto c = crantsDiscrets (0, pas)) { categorieChoisie = juce::jlimit (0, juce::jmax (0, categoriesDuNavigateur.size() - 1), categorieChoisie + c); sonChoisi = 0; } }, premier };
@@ -330,18 +349,49 @@ juce::StringArray Pilote::sonsDeLaCategorie() const
 {
     const auto categorie = categoriesDuNavigateur[categorieChoisie];
 
+    if (! pisteChoisieEstUneBatterie())
+        return sonsDeSynthe::sonsDuStyle (categorie);
+
     if (categorie == "Kits")
         return kitsDeDepart::noms();
 
     return moteur.getBanque().sons (categorie);
 }
 
+void Pilote::preecouterLeSynthe()
+{
+    // La fondamentale de la gamme, une demi-seconde
+    const int note = juce::jlimit (0, 127, moteur.getMorceau().gamme.note (0, octaves[(size_t) pisteChoisie]));
+    moteur.jouerNote (pisteChoisie, note, 100);
+    juce::Timer::callAfterDelay (500, [vie = std::weak_ptr<bool> (vivant), this, piste = pisteChoisie, note]
+    {
+        if (! vie.expired())
+            moteur.relacherNote (piste, note);
+    });
+}
+
 void Pilote::choisirDansLeNavigateur()
 {
-    if (! pisteChoisieEstUneBatterie())
-        return;
-
     const auto sons = sonsDeLaCategorie();
+
+    if (! pisteChoisieEstUneBatterie())
+    {
+        if (sons.isEmpty())
+            return;
+
+        if (auto son = sonsDeSynthe::trouver (sons[sonChoisi]))
+            moteur.modifier ([=, p = pisteChoisie] (Morceau& m)
+            {
+                m.pistes[(size_t) p].sonDeSynthe = son->nom;
+
+                for (int k = 0; k < 8; ++k)
+                    m.pistes[(size_t) p].macros[(size_t) k] = son->macros[(size_t) k].depart;
+            }, "navigateur");
+
+        preecouterLeSynthe();
+        return;
+    }
+
 
     if (sons.isEmpty())
         return;
@@ -355,6 +405,14 @@ void Pilote::choisirDansLeNavigateur()
 
     // Préécoute : le pad choisi, tout de suite
     moteur.jouerNote (pisteChoisie, Kit::premiereNote + padChoisi, 110);
+}
+
+int Pilote::noteDuPad (int ligne, int colonne) const
+{
+    // Comme le Push d'Ableton « en gamme » : un degré par colonne, une quarte par rangée
+    const auto& gamme = moteur.getMorceau().gamme;
+    const int parRangee = gamme.nombreDeDegres() >= 7 ? 3 : 2;
+    return juce::jlimit (0, 127, gamme.note (ligne * parRangee + colonne, octaves[(size_t) pisteChoisie]));
 }
 
 double Pilote::longueurDUnPas() const
@@ -449,7 +507,23 @@ void Pilote::traiter (const Evenement& e)
     switch (e.type)
     {
         case Evenement::Type::pad:
-            if (mode == Mode::note)
+            if (mode == Mode::note && ! pisteChoisieEstUneBatterie())
+            {
+                // Jeu en gamme : chaque pad garde la note qu'il a lancée, même si l'octave change entre-temps
+                auto& tenue = notesTenues[(size_t) e.numero];
+
+                if (e.appuye)
+                {
+                    tenue = noteDuPad (e.ligne(), e.colonne());
+                    moteur.jouerNote (pisteChoisie, tenue, tenu (Bouton::accent) ? 127 : e.valeur);
+                }
+                else if (tenue >= 0)
+                {
+                    moteur.relacherNote (pisteChoisie, tenue);
+                    tenue = -1;
+                }
+            }
+            else if (mode == Mode::note)
             {
                 if (e.appuye)
                     appuyerPadDeNote (e.ligne(), e.colonne(), e.valeur);
@@ -693,9 +767,6 @@ void Pilote::appuyerPiste (int piste)
         annoncer ("Piste "_fr + juce::String (piste + 1), p.nom);
     }
 
-    if (mode == Mode::note && ! p.estUneBatterie())
-        mode = Mode::session;
-
     pageDePas = 0;
 }
 
@@ -830,8 +901,25 @@ void Pilote::appuyer (int bouton)
             }
             else
             {
-                annoncer ("Note", "Les pads en gamme des synthés arrivent à l'étape 6"_fr);
+                mode = Mode::note;
+                page = Page::device;
+                annoncer ("Note", moteur.getMorceau().gamme.nom() + ", octave " + juce::String (octaves[(size_t) pisteChoisie]));
             }
+            return;
+
+        case Bouton::octaveHaut:
+        case Bouton::octaveBas:
+            if (mode == Mode::note && ! pisteChoisieEstUneBatterie())
+            {
+                auto& o = octaves[(size_t) pisteChoisie];
+                o = juce::jlimit (0, 7, o + ((Bouton) bouton == Bouton::octaveHaut ? 1 : -1));
+                annoncer ("Octave", juce::String (o));
+            }
+            return;
+
+        case Bouton::scale:
+            page = Page::gamme;
+            annoncer ("Scale", moteur.getMorceau().gamme.nom());
             return;
 
         case Bouton::session:
@@ -842,7 +930,8 @@ void Pilote::appuyer (int bouton)
         case Bouton::device:
             if (! pisteChoisieEstUneBatterie())
             {
-                annoncer ("Device", "Réglages des synthés à l'étape 6"_fr);
+                page = Page::macros;
+                annoncer ("Device", morceau.pistes[(size_t) pisteChoisie].sonDeSynthe + (moteur.joueAvecSurge (pisteChoisie) ? juce::String() : juce::String (" (Surge XT absent : son provisoire)")));
                 return;
             }
 
@@ -861,11 +950,20 @@ void Pilote::appuyer (int bouton)
                 return;
             }
 
-            categoriesDuNavigateur = moteur.getBanque().categories();
-            categoriesDuNavigateur.insert (0, "Kits");
-            categorieChoisie = juce::jlimit (0, categoriesDuNavigateur.size() - 1, categorieChoisie);
+            if (pisteChoisieEstUneBatterie())
+            {
+                categoriesDuNavigateur = moteur.getBanque().categories();
+                categoriesDuNavigateur.insert (0, "Kits");
+            }
+            else
+            {
+                categoriesDuNavigateur = sonsDeSynthe::styles();
+            }
+
+            categorieChoisie = juce::jlimit (0, juce::jmax (0, categoriesDuNavigateur.size() - 1), categorieChoisie);
+            sonChoisi = 0;
             page = Page::browse;
-            annoncer ("Browse", pisteChoisieEstUneBatterie() ? "Encodeur 1 : catégorie ; encodeur 2 : son"_fr : juce::String ("Choisis d'abord une piste batterie"));
+            annoncer ("Browse", pisteChoisieEstUneBatterie() ? "Encodeur 1 : catégorie ; encodeur 2 : son"_fr : juce::String ("Encodeur 1 : style ; encodeur 2 : son"));
             return;
 
         case Bouton::pageGauche:
@@ -931,7 +1029,17 @@ EtatSurface Pilote::calculerEtat() const
     const bool clignote = std::fmod (p.fraction * 2.0, 1.0) < 0.5;
     const bool pulse = p.fraction < 0.5;
 
-    if (mode == Mode::note)
+    if (mode == Mode::note && ! morceau.pistes[(size_t) pisteChoisie].estUneBatterie())
+    {
+        // Jeu en gamme : fondamentales en couleur pleine, autres notes en couleur faible, pad tenu en blanc
+        for (int i = 0; i < 64; ++i)
+        {
+            const int note = noteDuPad (i / 8, i % 8);
+            etat.pads[(size_t) i] = notesTenues[(size_t) i] >= 0 ? palette::blanc
+                                  : palette::indexDePiste (pisteChoisie, morceau.gamme.estFondamentale (note) ? 3 : 1);
+        }
+    }
+    else if (mode == Mode::note)
     {
         // Pads de la batterie (en bas à gauche) et pas à pas (en haut)
         const auto& kit = morceau.pistes[(size_t) pisteChoisie].kit;
@@ -1037,6 +1145,13 @@ EtatSurface Pilote::calculerEtat() const
     blanc (Bouton::session, mode == Mode::session);
     blanc (Bouton::note, mode == Mode::note);
     blanc (Bouton::accent, tenu (Bouton::accent));
+    blanc (Bouton::scale, page == Page::gamme);
+
+    if (mode == Mode::note && ! morceau.pistes[(size_t) pisteChoisie].estUneBatterie())
+    {
+        if (octaves[(size_t) pisteChoisie] < 7) blanc (Bouton::octaveHaut, false);
+        if (octaves[(size_t) pisteChoisie] > 0) blanc (Bouton::octaveBas, false);
+    }
 
     if (morceau.pistes[(size_t) pisteChoisie].estUneBatterie())
     {
@@ -1165,6 +1280,18 @@ void Pilote::dessinerEcran (juce::Image& image) const
 
 void Pilote::rafraichir()
 {
+    if (page == Page::macros)
+    {
+        const auto& p = moteur.getMorceau().pistes[(size_t) pisteChoisie];
+        const auto* son = sonsDeSynthe::trouver (p.sonDeSynthe);
+
+        for (int i = 0; i < 8; ++i)
+        {
+            pageMacros[(size_t) i].nom = son != nullptr ? son->macros[(size_t) i].nom : juce::String ("Macro ") + juce::String (i + 1);
+            pageMacros[(size_t) i].couleur = palette::couleurDePiste (pisteChoisie);
+        }
+    }
+
     dessinerEcran (ecran);
     surface.publier (calculerEtat(), ecran);
 }

@@ -4,6 +4,7 @@
 #include "ClicPlugin.h"
 #include "InstrumentProvisoire.h"
 #include "BatteriePlugin.h"
+#include "SonsDeSynthe.h"
 #include "modele/Morceau.h"
 
 namespace groovebox
@@ -90,6 +91,12 @@ public:
 
     BanqueDeSons& getBanque()                   { return *banque; }
 
+    /** Vrai si la piste joue avec Surge XT (sinon : son provisoire ou batterie). */
+    bool joueAvecSurge (int piste) const;
+
+    /** Pilote du Surge de la voix A d'une piste, pour les essais. */
+    PiloteDeSurge* piloteSurge (int piste) const        { return pistesMoteur[(size_t) piste].pilotesSurge[0].get(); }
+
     /** Débuts des notes telles que le moteur les joue (swing compris), pour les essais. */
     std::vector<double> debutsJoues (int piste, int scene) const;
 
@@ -144,6 +151,8 @@ private:
         std::array<te::AudioTrack*, 2> voix {};
         std::array<InstrumentProvisoire*, 2> instruments {};
         std::array<BatteriePlugin*, 2> batteries {};
+        std::array<te::Plugin::Ptr, 2> surges;                      ///< Surge XT, s'il est installé (pistes de synthé)
+        std::array<std::unique_ptr<PiloteDeSurge>, 2> pilotesSurge;
         te::AuxSendPlugin* envoiCasque = nullptr;
         te::VolumeAndPanPlugin* volume = nullptr;
     };

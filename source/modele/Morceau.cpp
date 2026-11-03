@@ -114,6 +114,7 @@ juce::var Morceau::versJson() const
     racine->setProperty ("volumeGeneralDb", volumeGeneralDb);
     racine->setProperty ("calage", nomsDesCalages[(int) calage]);
     racine->setProperty ("swing", swing);
+    racine->setProperty ("gamme", gamme.versJson());
     racine->setProperty ("prochaineGraine", (juce::int64) prochaineGraine);
 
     auto var = new juce::DynamicObject();
@@ -138,6 +139,11 @@ juce::var Morceau::versJson() const
 
         if (p.estUneBatterie())
             objet->setProperty ("kit", p.kit.versJson());
+        else
+        {
+            objet->setProperty ("sonDeSynthe", p.sonDeSynthe);
+            objet->setProperty ("macros", juce::Array<juce::var> { p.macros[0], p.macros[1], p.macros[2], p.macros[3], p.macros[4], p.macros[5], p.macros[6], p.macros[7] });
+        }
 
         listePistes.add (juce::var (objet));
     }
@@ -292,6 +298,9 @@ Morceau Morceau::depuisJson (const juce::var& v)
         m.calage = (Calage) c;
 
     m.swing = juce::jlimit (0.0f, 0.75f, (float) v.getProperty ("swing", 0.0f));
+
+    if (const auto g = v.getProperty ("gamme", {}); g.isObject())
+        m.gamme = Gamme::depuisJson (g);
     m.prochaineGraine = (juce::uint32) (juce::int64) v.getProperty ("prochaineGraine", 2);
 
     if (const auto var = v.getProperty ("variation", {}); var.isObject())
@@ -320,6 +329,13 @@ Morceau Morceau::depuisJson (const juce::var& v)
 
             if (const auto sw = p.getProperty ("swing", {}); ! sw.isVoid())
                 piste.swing = juce::jlimit (0.0f, 0.75f, (float) sw);
+
+            if (const auto son = p.getProperty ("sonDeSynthe", {}).toString(); son.isNotEmpty())
+                piste.sonDeSynthe = son;
+
+            if (auto macros = p.getProperty ("macros", {}).getArray(); macros != nullptr && macros->size() == 8)
+                for (int k = 0; k < 8; ++k)
+                    piste.macros[(size_t) k] = juce::jlimit (0.0f, 1.0f, (float) (*macros)[k]);
 
             if (const auto kit = p.getProperty ("kit", {}); kit.isObject())
                 piste.kit = Kit::depuisJson (kit);

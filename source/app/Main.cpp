@@ -6,6 +6,7 @@
 #include "moteur/Reglages.h"
 #include "modele/Bibliotheque.h"
 #include "modele/Demo.h"
+#include "moteur/Surge.h"
 
 namespace groovebox
 {
@@ -57,6 +58,42 @@ public:
             juce::Logger::writeToLog ("Aucune carte son ouverte");
 
         const auto arguments = juce::StringArray::fromTokens (ligneDeCommande, true);
+
+        if (const auto i = arguments.indexOf ("--options-surge"); i >= 0)
+        {
+            // Pour chaque paramètre demandé (séparés par des virgules) : les textes possibles et la valeur qui y mène
+            if (auto plugin = surge::creer (moteur->getEdit()))
+                if (auto externe = dynamic_cast<te::ExternalPlugin*> (plugin.get()))
+                    for (auto* p : externe->getAudioPluginInstance()->getParameters())
+                        for (auto& voulu : juce::StringArray::fromTokens (ligneDeCommande.fromFirstOccurrenceOf ("--options-surge", false, false).trim().unquoted(), ",", ""))
+                            if (p->getName (100).endsWith (voulu.trim().unquoted().trim()))
+                            {
+                                juce::String precedent;
+
+                                for (int k = 0; k <= 400; ++k)
+                                    if (auto t = p->getText ((float) k / 400.0f, 100); t != precedent)
+                                    {
+                                        std::cout << voulu.trim() << "\t" << juce::String ((float) k / 400.0f, 4) << "\t" << t << std::endl;
+                                        precedent = t;
+                                    }
+                            }
+
+            juce::JUCEApplication::getInstance()->systemRequestedQuit();
+            return;
+        }
+
+        if (arguments.contains ("--parametres-surge"))
+        {
+            // Liste les paramètres de Surge XT (nom, valeur, texte affiché) pour concevoir les sons de départ
+            if (auto plugin = surge::creer (moteur->getEdit()))
+                for (auto& [nom, p] : surge::parametres (*plugin))
+                    std::cout << nom << "\t" << p->getCurrentValue() << "\t" << p->getCurrentValueAsString() << std::endl;
+            else
+                std::cout << "Surge XT introuvable" << std::endl;
+
+            juce::JUCEApplication::getInstance()->systemRequestedQuit();
+            return;
+        }
 
         if (const auto i = arguments.indexOf ("--diagnostic"); i >= 0)
             lancerDiagnostic (arguments[i + 1].getIntValue());
