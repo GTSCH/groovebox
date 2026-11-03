@@ -2,15 +2,16 @@
 
 #include "PageJeu.h"
 #include "PageCarteSon.h"
+#include "PageSession.h"
 
 namespace groovebox
 {
 
-/** La fenêtre : un onglet « Jeu » et un onglet « Carte son ». Barre d'espace : lecture et arrêt ; T : Tap Tempo. */
+/** La fenêtre : onglets « Session », « Jeu » et « Carte son ». Barre d'espace : lecture et arrêt ; T : Tap Tempo. */
 class FenetrePrincipale  : public juce::Component
 {
 public:
-    FenetrePrincipale (te::Engine&, Moteur&, std::function<void()> ouvrirSimulateur, std::function<juce::String()> etatDuPush);
+    FenetrePrincipale (te::Engine&, Moteur&, ActionsMorceaux, std::function<juce::String()> etatDuPush);
 
     void resized() override;
     bool keyPressed (const juce::KeyPress&) override;

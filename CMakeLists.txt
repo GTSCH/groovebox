@@ -22,8 +22,11 @@ target_link_libraries (libusb_groovebox PUBLIC "-framework IOKit" "-framework Co
 set (SOURCES_MOTEUR
     source/modele/Mesure.cpp
     source/modele/Morceau.cpp
+    source/modele/Demo.cpp
+    source/modele/Bibliotheque.cpp
     source/moteur/BipPlugin.cpp
     source/moteur/ClicPlugin.cpp
+    source/moteur/InstrumentProvisoire.cpp
     source/moteur/Moteur.cpp
     source/moteur/Reglages.cpp
     source/push/Controles.cpp
@@ -70,6 +73,7 @@ target_sources (groovebox PRIVATE
     source/app/FenetrePrincipale.cpp
     source/app/PageJeu.cpp
     source/app/PageCarteSon.cpp
+    source/app/PageSession.cpp
     source/app/Simulateur.cpp)
 target_include_directories (groovebox PRIVATE source)
 target_compile_definitions (groovebox PRIVATE ${DEFINITIONS_COMMUNES})

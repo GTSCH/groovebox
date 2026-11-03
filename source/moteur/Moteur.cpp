@@ -6,7 +6,7 @@ namespace groovebox
 namespace
 {
     template <typename TypeDePlugin>
-    TypeDePlugin* ajouterPlugin (te::AudioTrack& piste, int position)
+    TypeDePlugin* ajouterPlugin (te::Track& piste, int position)
     {
         auto plugin = piste.edit.getPluginCache().createNewPlugin (TypeDePlugin::xmlTypeName, {});
         piste.pluginList.insertPlugin (plugin, position, nullptr);
@@ -18,12 +18,38 @@ namespace
 
     // Le clip du clic couvre quatre heures de jeu : une mesure qui tourne en boucle
     constexpr double dureeDuClipDuClic = 4.0 * 3600.0;
+    constexpr size_t tailleMaximaleDeLHistorique = 1000;
+
+    bool estEnCours (const std::shared_ptr<te::LaunchHandle>& lh)
+    {
+        return lh != nullptr && (lh->getPlayingStatus() == te::LaunchHandle::PlayState::playing
+                                 || lh->getQueuedStatus() == te::LaunchHandle::QueueState::playQueued);
+    }
+
+    void contraindre (Morceau& m)
+    {
+        m.tempo = juce::jlimit (Morceau::tempoMin, Morceau::tempoMax, m.tempo);
+        m.clic.decompte = juce::jlimit (0, 2, m.clic.decompte);
+        m.clic.volume = juce::jlimit (0.0f, 1.0f, m.clic.volume);
+        m.musiqueDansCasqueDb = juce::jlimit (-60.0f, 0.0f, m.musiqueDansCasqueDb);
+        m.volumeGeneralDb = juce::jlimit (-40.0f, 0.0f, m.volumeGeneralDb);
+
+        for (auto& p : m.pistes)
+        {
+            p.volumeDb = juce::jlimit (-60.0f, 6.0f, p.volumeDb);
+            p.panoramique = juce::jlimit (-1.0f, 1.0f, p.panoramique);
+        }
+
+        m.assurerScenes (8);
+    }
 }
 
 Moteur::Moteur (te::Engine& e, Morceau depart)  : engine (e), morceau (std::move (depart))
 {
     engine.getPluginManager().createBuiltInType<BipPlugin>();
     engine.getPluginManager().createBuiltInType<ClicPlugin>();
+    engine.getPluginManager().createBuiltInType<InstrumentProvisoire>();
+    contraindre (morceau);
 
     edit = te::Edit::createSingleTrackEdit (engine);
     edit->ensureNumberOfAudioTracks (2);
@@ -47,12 +73,42 @@ Moteur::Moteur (te::Engine& e, Morceau depart)  : engine (e), morceau (std::move
 
     clipDuClic = pisteCasque->insertMIDIClip ("Clic", { te::TimePosition(), te::TimeDuration::fromSeconds (dureeDuClipDuClic) }, nullptr);
 
+    // Les 8 pistes : un dossier (volume, panoramique, mute, solo, envoi au casque) qui contient les voix A et B.
+    // La voix B sert aux enchaînements (étape 8) : à l'étape 4, elle a son instrument mais ne joue jamais.
+    te::Track* precedente = pisteCasque;
+
+    for (int i = 0; i < nombreDePistes; ++i)
+    {
+        auto& pm = pistesMoteur[(size_t) i];
+        auto dossier = edit->insertNewFolderTrack (te::TrackInsertPoint (nullptr, precedente), nullptr, true);
+        pm.dossier = dossier.get();
+        precedente = pm.dossier;
+
+        for (int k = 0; k < 2; ++k)
+        {
+            auto v = edit->insertNewAudioTrack (te::TrackInsertPoint (pm.dossier, k == 0 ? nullptr : pm.voix[0]), nullptr);
+            pm.voix[(size_t) k] = v.get();
+            v->setName ("Piste " + juce::String (i + 1) + (k == 0 ? ", voix A" : ", voix B"));
+            v->playSlotClips = true;
+            pm.instruments[(size_t) k] = ajouterPlugin<InstrumentProvisoire> (*v, 0);
+        }
+
+        pm.volume = pm.dossier->getVolumePlugin();
+
+        if (pm.volume == nullptr)
+            pm.volume = ajouterPlugin<te::VolumeAndPanPlugin> (*pm.dossier, 0);
+
+        pm.envoiCasque = ajouterPlugin<te::AuxSendPlugin> (*pm.dossier, -1);
+    }
+
     if (auto tempo = edit->tempoSequence.getTempo (0))
         tempo->setCurve (1.0f);
 
     appliquerTempo();
     appliquerMesure();
     appliquerReglagesDuClic();
+    appliquerPistes (morceau, true);
+    appliquerCases (morceau, true);
     appliquerRoutage();
     engine.getDeviceManager().addChangeListener (this);
 
@@ -61,21 +117,17 @@ Moteur::Moteur (te::Engine& e, Morceau depart)  : engine (e), morceau (std::move
 
 Moteur::~Moteur()
 {
+    stopTimer();
     engine.getDeviceManager().removeChangeListener (this);
     edit->getTransport().stop (false, true);
 }
 
 //==============================================================================
-void Moteur::modifier (const std::function<void (Morceau&)>& changement)
+void Moteur::modifier (const std::function<void (Morceau&)>& changement, const juce::String& geste)
 {
     auto nouveau = morceau;
     changement (nouveau);
-
-    nouveau.tempo = juce::jlimit (Morceau::tempoMin, Morceau::tempoMax, nouveau.tempo);
-    nouveau.clic.decompte = juce::jlimit (0, 2, nouveau.clic.decompte);
-    nouveau.clic.volume = juce::jlimit (0.0f, 1.0f, nouveau.clic.volume);
-    nouveau.musiqueDansCasqueDb = juce::jlimit (-40.0f, 0.0f, nouveau.musiqueDansCasqueDb);
-    nouveau.volumeGeneralDb = juce::jlimit (-40.0f, 0.0f, nouveau.volumeGeneralDb);
+    contraindre (nouveau);
 
     if (! nouveau.mesure.estValide() || enLecture())
         nouveau.mesure = morceau.mesure;
@@ -83,31 +135,433 @@ void Moteur::modifier (const std::function<void (Morceau&)>& changement)
     if (sortieCasqueDisponible())
         nouveau.clic.ecouteSurMac = false;
 
+    if (nouveau == morceau)
+        return;
+
+    // Un même geste continu (un encodeur qu'on tourne) ne fait qu'une étape d'annulation
+    const auto maintenant = juce::Time::getMillisecondCounterHiRes();
+    const bool memeGeste = geste.isNotEmpty() && geste == dernierGeste && maintenant - instantDuDernierGeste < 1000.0;
+
+    if (! memeGeste)
+    {
+        historique.push_back (morceau);
+
+        if (historique.size() > tailleMaximaleDeLHistorique)
+            historique.erase (historique.begin());
+    }
+
+    dernierGeste = geste;
+    instantDuDernierGeste = maintenant;
+    futur.clear();
+
     const auto ancien = morceau;
     morceau = nouveau;
+    appliquerDifferences (ancien);
 
+    if (surChangementDeMorceau)
+        surChangementDeMorceau();
+}
+
+void Moteur::appliquerDifferences (const Morceau& ancien)
+{
     if (morceau.tempo != ancien.tempo)
         appliquerTempo();
 
     if (morceau.mesure != ancien.mesure)
+    {
         appliquerMesure();
-    else if (morceau.clic.subdivisions != ancien.clic.subdivisions || morceau.clic.unClicParGroupe != ancien.clic.unClicParGroupe)
-        appliquerMotifDuClic();
+        appliquerCases (ancien, true);   // la longueur des clips en temps dépend de la mesure
+    }
+    else
+    {
+        if (morceau.clic.subdivisions != ancien.clic.subdivisions || morceau.clic.unClicParGroupe != ancien.clic.unClicParGroupe)
+            appliquerMotifDuClic();
+
+        appliquerCases (ancien, false);
+    }
 
     appliquerReglagesDuClic();
+    appliquerPistes (ancien, false);
 
     if (morceau.clic.ecouteSurMac != ancien.clic.ecouteSurMac)
         appliquerRoutage();
+}
+
+void Moteur::chargerMorceau (const Morceau& nouveau)
+{
+    arreter();
+
+    const auto ancien = morceau;
+    morceau = nouveau;
+    contraindre (morceau);
+    historique.clear();
+    futur.clear();
+    dernierGeste = {};
+
+    appliquerTempo();
+    appliquerMesure();
+    appliquerReglagesDuClic();
+    appliquerPistes (ancien, true);
+    appliquerCases (ancien, true);
+    appliquerRoutage();
 
     if (surChangementDeMorceau)
         surChangementDeMorceau();
+}
+
+bool Moteur::annuler()
+{
+    if (historique.empty())
+        return false;
+
+    const auto ancien = morceau;
+    futur.push_back (morceau);
+    morceau = historique.back();
+    historique.pop_back();
+
+    if (enLecture())
+        morceau.mesure = ancien.mesure;     // la mesure ne change jamais pendant la lecture
+
+    dernierGeste = {};
+    appliquerDifferences (ancien);
+
+    if (surChangementDeMorceau)
+        surChangementDeMorceau();
+
+    return true;
+}
+
+bool Moteur::retablir()
+{
+    if (futur.empty())
+        return false;
+
+    const auto ancien = morceau;
+    historique.push_back (morceau);
+    morceau = futur.back();
+    futur.pop_back();
+
+    if (enLecture())
+        morceau.mesure = ancien.mesure;
+
+    dernierGeste = {};
+    appliquerDifferences (ancien);
+
+    if (surChangementDeMorceau)
+        surChangementDeMorceau();
+
+    return true;
+}
+
+//==============================================================================
+void Moteur::appliquerPistes (const Morceau& ancien, bool tout)
+{
+    for (int i = 0; i < nombreDePistes; ++i)
+    {
+        const auto& p = morceau.pistes[(size_t) i];
+        const auto& a = ancien.pistes[(size_t) i];
+        auto& pm = pistesMoteur[(size_t) i];
+
+        if (! tout && p == a)
+            continue;
+
+        pm.dossier->setName (p.nom);
+
+        for (auto* instrument : pm.instruments)
+            instrument->son = (int) p.son;
+
+        pm.volume->setVolumeDb (p.volumeDb);
+        pm.volume->setPan (p.panoramique);
+        pm.dossier->setMute (p.mute);
+        pm.dossier->setSolo (p.solo);
+    }
+}
+
+void Moteur::assurerCases()
+{
+    const int n = juce::jmax (8, (int) morceau.scenes.size());
+    edit->getSceneList().ensureNumberOfScenes (n);
+
+    for (auto& pm : pistesMoteur)
+        for (auto* v : pm.voix)
+            v->getClipSlotList().ensureNumberOfSlots (n);
+}
+
+te::MidiClip* Moteur::clipDeLaCase (int piste, int scene) const
+{
+    auto cases = pistesMoteur[(size_t) piste].voix[0]->getClipSlotList().getClipSlots();
+
+    if (scene < 0 || scene >= cases.size() || cases[scene] == nullptr)
+        return nullptr;
+
+    return dynamic_cast<te::MidiClip*> (cases[scene]->getClip());
+}
+
+void Moteur::appliquerCases (const Morceau& ancien, bool tout)
+{
+    assurerCases();
+    const int n = juce::jmax ((int) morceau.scenes.size(), (int) ancien.scenes.size());
+
+    for (int s = 0; s < n; ++s)
+        for (int p = 0; p < nombreDePistes; ++p)
+        {
+            const auto* avant = ancien.clip (p, s);
+            const auto* apres = morceau.clip (p, s);
+            const bool change = (avant == nullptr) != (apres == nullptr) || (avant != nullptr && ! (*avant == *apres));
+
+            if (tout || change)
+                appliquerCase (p, s);
+        }
+}
+
+void Moteur::appliquerCase (int piste, int scene)
+{
+    const auto* modele = morceau.clip (piste, scene);
+    auto* existant = clipDeLaCase (piste, scene);
+
+    if (modele == nullptr)
+    {
+        if (existant != nullptr)
+        {
+            if (auto lh = existant->getLaunchHandle())
+                lh->stop ({});
+
+            existant->removeFromParent();
+        }
+
+        return;
+    }
+
+    if (existant == nullptr)
+    {
+        auto cases = pistesMoteur[(size_t) piste].voix[0]->getClipSlotList().getClipSlots();
+
+        if (scene >= cases.size())
+            return;
+
+        existant = te::insertMIDIClip (*cases[scene], modele->nom, { te::TimePosition(), te::TimeDuration::fromSeconds (1.0) }).get();
+
+        if (existant == nullptr)
+            return;
+    }
+
+    // On met à jour le clip sur place : s'il joue, il continue
+    const auto longueur = (double) modele->longueurMesures * morceau.mesure.numerateur;
+    existant->setName (modele->nom);
+    existant->setLength (edit->tempoSequence.toTime (te::BeatPosition::fromBeats (longueur)) - te::TimePosition(), false);
+
+    auto& notes = existant->getSequence();
+    notes.clear (nullptr);
+
+    for (auto& n : modele->notes)
+        if (n.debut >= 0.0 && n.debut < longueur)
+            notes.addNote (n.hauteur, te::BeatPosition::fromBeats (n.debut), te::BeatDuration::fromBeats (juce::jmin (n.duree, longueur - n.debut)),
+                           n.velocite, 0, nullptr);
+
+    existant->setLoopRangeBeats ({ te::BeatPosition(), te::BeatDuration::fromBeats (longueur) });
+}
+
+//==============================================================================
+double Moteur::tempsDeLaMesure1() const
+{
+    return (double) mesuresDePreparation * morceau.mesure.numerateur;
+}
+
+double Moteur::longueurDuCalage() const
+{
+    const auto parMesure = (double) morceau.mesure.numerateur;
+
+    switch (morceau.calage)
+    {
+        case Calage::temps:         return 1.0;
+        case Calage::mesure:        return parMesure;
+        case Calage::deuxMesures:   return 2.0 * parMesure;
+        case Calage::quatreMesures: return 4.0 * parMesure;
+    }
+
+    return parMesure;
+}
+
+std::optional<te::MonotonicBeat> Moteur::prochainCalage (std::optional<double> tempsVise) const
+{
+    auto contexte = edit->getCurrentPlaybackContext();
+
+    if (contexte == nullptr)
+        return std::nullopt;
+
+    const auto point = contexte->getSyncPoint();
+
+    if (! point)
+        return std::nullopt;
+
+    const auto maintenant = point->beat.inBeats();
+    const auto mesure1 = tempsDeLaMesure1();
+    double vise;
+
+    if (tempsVise)
+    {
+        vise = *tempsVise;
+    }
+    else if (maintenant < mesure1)
+    {
+        vise = mesure1;     // pendant le décompte : tout part à la mesure 1
+    }
+    else
+    {
+        // Prochaine limite du calage, comptée depuis la mesure 1 (le décompte n'est pas une mesure du morceau)
+        const auto longueur = longueurDuCalage();
+        vise = mesure1 + (std::floor ((maintenant - mesure1) / longueur + 1.0e-9) + 1.0) * longueur;
+    }
+
+    return te::MonotonicBeat { point->monotonicBeat.v + te::BeatDuration::fromBeats (vise - maintenant) };
+}
+
+void Moteur::lancerMaintenant (int piste, int scene, te::MonotonicBeat quand)
+{
+    const int n = juce::jmax (8, (int) morceau.scenes.size());
+
+    for (int s = 0; s < n; ++s)
+    {
+        auto* c = clipDeLaCase (piste, s);
+
+        if (c == nullptr)
+            continue;
+
+        auto lh = c->getLaunchHandle();
+
+        if (s == scene)
+            lh->play (quand);
+        else if (estEnCours (lh))
+            lh->stop (quand);
+    }
+}
+
+void Moteur::arreterMaintenant (int piste, std::optional<te::MonotonicBeat> quand)
+{
+    const int n = juce::jmax (8, (int) morceau.scenes.size());
+
+    for (int s = 0; s < n; ++s)
+        if (auto* c = clipDeLaCase (piste, s))
+            if (auto lh = c->getLaunchHandle(); estEnCours (lh))
+                lh->stop (quand);
+}
+
+void Moteur::lancerClip (int piste, int scene)
+{
+    if (morceau.clip (piste, scene) == nullptr)
+    {
+        arreterPiste (piste);   // une case vide arrête la piste
+        return;
+    }
+
+    if (demarrageEnAttente || ! enLecture())
+    {
+        auto& attente = lancementsAuDemarrage;
+        attente.erase (std::remove_if (attente.begin(), attente.end(), [piste] (auto& l) { return l.first == piste; }), attente.end());
+        attente.push_back ({ piste, scene });
+
+        if (! demarrageEnAttente)
+            lancer();
+
+        return;
+    }
+
+    if (auto quand = prochainCalage())
+        lancerMaintenant (piste, scene, *quand);
+}
+
+void Moteur::lancerScene (int scene)
+{
+    for (int p = 0; p < nombreDePistes; ++p)
+        if (morceau.clip (p, scene) != nullptr)
+            lancerClip (p, scene);      // une case vide laisse la piste continuer
+}
+
+void Moteur::arreterPiste (int piste)
+{
+    if (demarrageEnAttente)
+    {
+        auto& attente = lancementsAuDemarrage;
+        attente.erase (std::remove_if (attente.begin(), attente.end(), [piste] (auto& l) { return l.first == piste; }), attente.end());
+        return;
+    }
+
+    if (enLecture())
+        arreterMaintenant (piste, prochainCalage());
+}
+
+void Moteur::arreterTousLesClips()
+{
+    for (int p = 0; p < nombreDePistes; ++p)
+        arreterPiste (p);
+}
+
+EtatCase Moteur::etatCase (int piste, int scene) const
+{
+    EtatCase e;
+    auto* c = clipDeLaCase (piste, scene);
+
+    if (c == nullptr || morceau.clip (piste, scene) == nullptr)
+        return e;
+
+    e.clip = true;
+    auto lh = c->getLaunchHandle();
+    const auto attente = lh->getQueuedStatus();
+    e.joue = lh->getPlayingStatus() == te::LaunchHandle::PlayState::playing;
+    e.departEnAttente = attente == te::LaunchHandle::QueueState::playQueued
+                        || std::find (lancementsAuDemarrage.begin(), lancementsAuDemarrage.end(), std::pair { piste, scene }) != lancementsAuDemarrage.end();
+    e.arretEnAttente = attente == te::LaunchHandle::QueueState::stopQueued;
+    return e;
+}
+
+int Moteur::sceneJouee (int piste) const
+{
+    for (int s = 0; s < (int) morceau.scenes.size(); ++s)
+        if (etatCase (piste, s).joue)
+            return s;
+
+    return -1;
+}
+
+void Moteur::avancer()
+{
+    if (! demarrageEnAttente)
+    {
+        stopTimer();
+        return;
+    }
+
+    auto contexte = edit->getCurrentPlaybackContext();
+    const auto point = contexte != nullptr ? contexte->getSyncPoint() : std::nullopt;
+
+    if (! edit->getTransport().isPlaying() || ! point)
+        return;
+
+    // On attend que le fil audio joue depuis la position de départ (avant, le point de synchro date de l'ancienne lecture)
+    const auto maintenant = point->beat.inBeats();
+    const bool positionPrise = maintenant >= tempsDuDepart - 1.0e-3 && maintenant < tempsDeLaMesure1() + morceau.mesure.numerateur;
+
+    if (! positionPrise && juce::Time::getMillisecondCounterHiRes() - instantDuDemarrage < 300.0)
+        return;
+
+    if (! positionPrise)
+        juce::Logger::writeToLog ("Départ sans position confirmée : clips calés sur le calage suivant"_fr);
+
+    // Pendant le décompte, prochainCalage() vise la mesure 1
+    for (auto [piste, scene] : lancementsAuDemarrage)
+        if (auto quand = prochainCalage())
+            lancerMaintenant (piste, scene, *quand);
+
+    lancementsAuDemarrage.clear();
+    demarrageEnAttente = false;
+    stopTimer();
 }
 
 void Moteur::appliquerTempo()
 {
     auto& tempos = edit->tempoSequence;
 
-    if (! enLecture())
+    if (! edit->getTransport().isPlaying())
     {
         ramenerTempoAUnSeul();
         return;
@@ -158,6 +612,10 @@ void Moteur::appliquerReglagesDuClic()
     clic->volume = morceau.clic.volume;
     envoiCasque->setGainDb (morceau.musiqueDansCasqueDb);
 
+    for (auto& pm : pistesMoteur)
+        if (pm.envoiCasque != nullptr)
+            pm.envoiCasque->setGainDb (morceau.musiqueDansCasqueDb);
+
     if (auto volume = edit->getMasterVolumePlugin())
         volume->setVolumeDb (morceau.volumeGeneralDb);
 }
@@ -168,21 +626,40 @@ void Moteur::lancer()
     auto& transport = edit->getTransport();
 
     if (transport.isPlaying())
+    {
+        for (int p = 0; p < nombreDePistes; ++p)
+            arreterMaintenant (p, std::nullopt);
+
         transport.stop (false, false);
+    }
 
     ramenerTempoAUnSeul();
 
-    const int mesureDeDepart = mesuresDePreparation - morceau.clic.decompte;
-    const auto temps = te::BeatPosition::fromBeats ((double) mesureDeDepart * morceau.mesure.numerateur);
-    transport.setPosition (edit->tempoSequence.toTime (temps));
+    // Départ au début du décompte ; sans décompte, 80 ms avant la mesure 1, le temps de caler les clips
+    const auto parSeconde = morceau.tempo / 60.0 * morceau.mesure.denominateur / 4.0;
+    tempsDuDepart = morceau.clic.decompte > 0
+                      ? (double) (mesuresDePreparation - morceau.clic.decompte) * morceau.mesure.numerateur
+                      : tempsDeLaMesure1() - 0.08 * parSeconde;
+
+    transport.setPosition (edit->tempoSequence.toTime (te::BeatPosition::fromBeats (tempsDuDepart)));
+    transport.play (false);
 
     lectureVoulue = true;
-    transport.play (false);
+    demarrageEnAttente = true;
+    instantDuDemarrage = juce::Time::getMillisecondCounterHiRes();
+    startTimer (2);
 }
 
 void Moteur::arreter()
 {
     lectureVoulue = false;
+    demarrageEnAttente = false;
+    lancementsAuDemarrage.clear();
+    stopTimer();
+
+    for (int p = 0; p < nombreDePistes; ++p)
+        arreterMaintenant (p, std::nullopt);
+
     edit->getTransport().stop (false, false);
     ramenerTempoAUnSeul();
 }

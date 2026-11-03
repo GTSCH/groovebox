@@ -8,7 +8,8 @@ namespace groovebox
 {
 
 /** Ce que fait chaque contrôle du Push, et ce que le Push montre : LED et écran.
-    Page de l'étape 3 : les réglages du clic sur les encodeurs 1 à 6. */
+    Pads : la Session (8 pistes en colonnes, 8 scènes en lignes, la première scène en haut).
+    Encodeurs : page Mix (volumes des pistes) ou page Clic (bouton Setup). */
 class Pilote  : private juce::Timer
 {
 public:
@@ -23,7 +24,14 @@ public:
     EtatSurface calculerEtat() const;
     void dessinerEcran (juce::Image&) const;
 
-    /** Message affiché un instant sur l'écran quand on touche un contrôle (mode d'essai). */
+    enum class Page { mix, clic };
+    Page getPage() const                    { return page; }
+    int getPremiereScene() const            { return premiereScene; }
+    int getPisteChoisie() const             { return pisteChoisie; }
+
+    /** Scène montrée par une ligne de pads (ligne 7 en haut = première scène visible). */
+    int sceneDeLaLigne (int ligne) const    { return premiereScene + (7 - ligne); }
+
     struct Annonce
     {
         juce::String titre, valeur;
@@ -39,24 +47,37 @@ private:
         std::function<juce::String()> valeur;
         std::function<float()> proportion;
         std::function<void (int pas, bool fin)> tourner;
+        juce::Colour couleur;
     };
 
     Moteur& moteur;
     Surface& surface;
     TapTempo tapTempo;
-    std::array<int, 64> velocites {};
+    Page page = Page::mix;
+    int premiereScene = 0, pisteChoisie = 0;
+    std::optional<std::pair<int, int>> caseChoisie;
+    std::optional<std::pair<int, int>> sourceDeCopie;     ///< Duplicate tenu : premier pad appuyé
+    std::optional<int> sceneSourceDeCopie;
+    bool copieFaite = false;
     std::array<bool, nombreEncodeurs> touches {};
     std::array<int, nombreEncodeurs> crans {};
-    std::array<Reglage, 8> page;
+    std::array<Reglage, 8> pageClic, pageMix;
     Annonce annonce;
     juce::Image ecran { juce::Image::RGB, EtatSurface::largeurEcran, EtatSurface::hauteurEcran, true };
 
+    const std::array<Reglage, 8>& reglages() const  { return page == Page::mix ? pageMix : pageClic; }
     bool shift() const;
+    bool tenu (Bouton b) const                      { return surface.estAppuye (b); }
     void annoncer (const juce::String& titre, const juce::String& valeur);
     int crantsDiscrets (int encodeur, int pas);
     void tournerEncodeur (int encodeur, int pas);
     void appuyer (int bouton);
-    void timerCallback() override       { rafraichir(); }
+    void relacher (int bouton);
+    void appuyerPad (int ligne, int colonne);
+    void appuyerScene (int scene);
+    void appuyerPiste (int piste);
+    void dupliquerVersLeBas (int piste, int scene);
+    void timerCallback() override                   { rafraichir(); }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Pilote)
 };

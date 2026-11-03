@@ -9,12 +9,13 @@ Groovebox logicielle pour Mac, pilotée au Push 2. Le cahier des charges est dan
 | 1. Fondations | Faite et validée à l'oreille le 03.11.2026 |
 | 2. Horloge, mesures, clic | Faite et validée à l'oreille le 03.11.2026 |
 | 3. Push 2 | Faite le 03.11.2026, validée avec le simulateur et les essais ; essai sur le vrai Push à faire |
-| 4 à 11 | Pas commencées |
+| 4. Session | Faite et validée à l'oreille le 03.11.2026 |
+| 5 à 11 | Pas commencées |
 
 ## Organisation
 
-- `source/modele/` : le morceau (tempo, mesure, groupement, clic), sauvegardé en JSON lisible ; Tap Tempo.
-- `source/moteur/` : le moteur audio (Tracktion Engine), le clic, le bip de test, les réglages. Code commun à l'application et aux essais.
+- `source/modele/` : le morceau (tempo, mesure, clic, 8 pistes, scènes, clips de notes), sauvegardé en JSON lisible ; `Bibliotheque` (un dossier par morceau, copies de secours, repérage des plantages) ; `Demo` (morceau de démonstration) ; Tap Tempo.
+- `source/moteur/` : le moteur audio (Tracktion Engine), le clic, l'instrument provisoire (batterie et petit synthé calculés, en attendant les étapes 5 et 6), le bip de test, les réglages. Code commun à l'application et aux essais.
 - `source/push/` : le Push 2. `Controles` (numéros des boutons, lecture des messages, commandes sysex), `Palette` (8 couleurs de piste), `Surface` (état partagé entre le Push et le simulateur), `PushMidi` (port User), `EcranPush` (écran par USB, fil dédié à 60 images par seconde), `Pilote` (ce que fait chaque contrôle, LED, dessin de l'écran).
 - `source/app/` : l'application Mac (onglets « Jeu » et « Carte son », simulateur du Push dans une fenêtre à part, point d'entrée).
 - `source/Texte.h` : écrire `"Décompte"_fr` pour tout texte accentué dans le code, sinon JUCE lit les accents de travers.
@@ -36,7 +37,7 @@ La première compilation prend quelques minutes ; les suivantes sont rapides.
 ## Fichiers sur le Mac
 
 - Réglages (carte son, fréquence, tampon) : `~/Library/Application Support/groovebox/Settings.xml`
-- Morceau en cours (rechargé à l'ouverture, sauvegardé au fil des changements) : `~/Library/Application Support/groovebox/morceau-en-cours.json`
+- Morceaux : `~/Music/groovebox/Morceaux/<nom>/morceau.json` (sauvegardé dans les 2 secondes qui suivent chaque changement), copies de secours dans `sauvegardes/` (une toutes les 5 minutes, les 20 dernières). Le dernier ouvert revient au lancement. Hors du OneDrive.
 - Journal : `~/Library/Logs/groovebox/journal.txt`
 
 ## Diagnostic sans fenêtre
@@ -55,6 +56,10 @@ Fait tourner le moteur 60 secondes avec les bips actifs mais muets, puis écrit 
 - Changer le tempo en pleine lecture ajoute un point de tempo juste après la position actuelle : la mesure ne saute pas. À l'arrêt, on revient à un seul tempo.
 - Le clic est un clip MIDI d'une mesure, en boucle, joué par `ClicPlugin`. Le casque (3-4) reçoit le clic et une copie de la musique (envoi et retour du bus 0). Sans sorties 3-4, il se tait, sauf « écoute sur le Mac », qui envoie le clic seul sur 1-2.
 - Si un bloc audio prend plus de 98 % du temps disponible, le moteur rend un bloc de silence et prend un bloc de retard. Les essais désactivent cette sécurité (le calcul y est hors temps réel) ; en concert, c'est la marge de calcul qui compte (étape 11).
+- Session : chaque piste est un dossier du moteur (volume, panoramique, mute, solo, envoi au casque) qui contient les voix A et B ; les clips sont dans les cases de la voix A, la voix B attend les enchaînements (étape 8). Les lancements utilisent les « launch handles » du moteur, calés sur la limite voulue (temps, mesure, 2 ou 4 mesures, comptées depuis la mesure 1).
+- Démarrage : la lecture part tout de suite (au début du décompte, ou 80 ms avant la mesure 1 sans décompte) et les clips sont calés dès que le fil audio confirme la position. À l'arrêt, le moteur ne met pas sa position à jour : ne jamais compter dessus.
+- Le son est calculé sur le seul fil audio (`getNumberOfCPUsToUseForAudio` à 1) : réparti sur les 8 cœurs de la puce M3, il provoquait des coupures malgré 4 % de charge. À revoir avec Surge XT.
+- Annuler : historique du morceau (1000 étapes), un même geste continu (un encodeur) ne compte qu'une fois. Les lancements de clips ne s'annulent pas (c'est du jeu, pas de l'édition).
 - Push 2 : seuls les messages documentés par Ableton (manuel « Push 2 MIDI and Display Interface »). À la connexion : mode User, palette (entrées 64 à 95 seulement), bande tactile ; à la fermeture : LED éteintes et retour au mode Live. Ableton Live doit être fermé (il garde l'écran).
 - Le simulateur ne reçoit pas les clics quand sa fenêtre est en arrière-plan sous le contrôle d'écran de Claude : pour l'essayer, prendre la main à l'écran (clic réel).
 - Licences : libusb LGPL 2.1 ; Tracktion Engine GPL v3, JUCE AGPL v3. Usage personnel, aucune contrainte.

@@ -5,6 +5,8 @@
 #include "moteur/Moteur.h"
 #include "moteur/Reglages.h"
 #include "modele/TapTempo.h"
+#include "modele/Demo.h"
+#include "modele/Bibliotheque.h"
 #include "push/Pilote.h"
 #include "push/EcranPush.h"
 #include "push/PushMidi.h"
@@ -219,6 +221,14 @@ namespace
         return s;
     }
 
+    /** Lance la lecture et laisse la carte tourner jusqu'au vrai départ (quelques blocs). */
+    void demarrer (Moteur& moteur, CarteSimulee& carte)
+    {
+        moteur.lancer();
+        carte.jouer (128);
+        moteur.avancer();
+    }
+
     Morceau morceauAvec (double tempo, Mesure mesure, int decompte = 0)
     {
         Morceau m;
@@ -362,7 +372,7 @@ public:
             expect (! moteur.getMorceau().clic.ecouteSurMac);
 
             moteur.activerBip (Sortie::casque, true);
-            moteur.lancer();
+            demarrer (moteur, carte);
             auto audio = carte.jouer (3 * uneSeconde);
 
             for (int canal : { 0, 1 })
@@ -380,7 +390,7 @@ public:
 
             moteur.activerBip (Sortie::casque, true);
             expect (! moteur.bipActif (Sortie::casque), "le bouton casque doit refuser de s'allumer");
-            moteur.lancer();
+            demarrer (moteur, carte);
             auto audio = carte.jouer (2 * uneSeconde);
 
             for (int canal : { 0, 1 })
@@ -404,7 +414,7 @@ public:
 
             moteur.activerBip (Sortie::principale, false);
             moteur.modifier ([] (Morceau& m) { m.clic.actif = true; });
-            moteur.lancer();
+            demarrer (moteur, carte);
             laisserTravailler();
             auto clic = carte.jouer (2 * uneSeconde);
             expect (crete (clic, 0) > 0.3f, "le clic doit s'entendre sur le Mac");
@@ -454,11 +464,11 @@ public:
         auto& engine = *te::Engine::getEngines()[0];
 
         // Le clic des essais passe sur 1-2 (écoute sur le Mac) : carte à 2 sorties, moins de mémoire pour 10 minutes
-        auto lancerSurDeuxSorties = [] (Moteur& moteur)
+        auto lancerSurDeuxSorties = [] (Moteur& moteur, CarteSimulee& carte)
         {
             moteur.modifier ([] (Morceau& m) { m.clic.ecouteSurMac = true; });
             laisserTravailler();
-            moteur.lancer();
+            demarrer (moteur, carte);
         };
 
         for (auto [tempo, mesure] : { std::pair { 100.0, Mesure { 9, 8, { 2, 2, 2, 3 } } },
@@ -471,7 +481,7 @@ public:
             beginTest ("Accents justes en " + mesure.nom() + " " + mesure.nomGroupement() + " à "_fr + juce::String (tempo) + " BPM");
             CarteSimulee carte (engine, 2);
             Moteur moteur (engine, morceauAvec (tempo, mesure));
-            lancerSurDeuxSorties (moteur);
+            lancerSurDeuxSorties (moteur, carte);
 
             const double tempsParSeconde = tempo / 60.0 * mesure.denominateur / 4.0;
             DetecteurDeCoups detecteur;
@@ -486,7 +496,7 @@ public:
             beginTest ("Aucune dérive sur 10 minutes en "_fr + mesure.nom() + " à "_fr + juce::String (tempo) + " BPM");
             CarteSimulee carte (engine, 2);
             Moteur moteur (engine, morceauAvec (tempo, mesure));
-            lancerSurDeuxSorties (moteur);
+            lancerSurDeuxSorties (moteur, carte);
 
             DetecteurDeCoups detecteur;
 
@@ -536,7 +546,7 @@ public:
             auto morceau = morceauAvec (100.0, Mesure::standard (6, 8));
             morceau.clic.unClicParGroupe = true;
             Moteur moteur (engine, morceau);
-            lancerSurDeuxSorties (moteur);
+            lancerSurDeuxSorties (moteur, carte);
             DetecteurDeCoups detecteur;
             detecteur.analyser (carte.jouer (uneSeconde * 3), 0);
             expectEquals (suiteDesTypes (detecteur.coups, 4), juce::String ("PGPG"));
@@ -544,7 +554,7 @@ public:
             moteur.arreter();
             moteur.modifier ([] (Morceau& m) { m.clic.subdivisions = true; });
             laisserTravailler();
-            moteur.lancer();
+            demarrer (moteur, carte);
             DetecteurDeCoups avecSubdivisions;
             avecSubdivisions.analyser (carte.jouer (uneSeconde * 2), 0);
             expectEquals (suiteDesTypes (avecSubdivisions.coups, 6), juce::String ("PssGss"));
@@ -554,24 +564,24 @@ public:
         {
             CarteSimulee carte (engine, 2);
             Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4), 2));
-            lancerSurDeuxSorties (moteur);
+            lancerSurDeuxSorties (moteur, carte);
 
             DetecteurDeCoups detecteur;
             detecteur.analyser (carte.jouer (uneSeconde), 0);
             expectEquals (moteur.getPosition().mesure, -1, "première mesure de décompte"_fr);
             detecteur.analyser (carte.jouer (uneSeconde * 2), 0);
             expectEquals (moteur.getPosition().mesure, 0, "seconde mesure de décompte"_fr);
-            detecteur.analyser (carte.jouer (uneSeconde * 2), 0);
+            detecteur.analyser (carte.jouer (uneSeconde + uneSeconde / 4), 0);
             expectEquals (moteur.getPosition().mesure, 1, "après le décompte, mesure 1"_fr);
-            expectEquals (moteur.getPosition().temps, 1);
-            expectEquals (suiteDesTypes (detecteur.coups, 10), juce::String ("PaaaPaaaPa"));
+            expectEquals (moteur.getPosition().temps, 0, "milieu du premier temps de la mesure 1"_fr);
+            expectEquals (suiteDesTypes (detecteur.coups, 9), juce::String ("PaaaPaaaP"));
         }
 
         beginTest ("Changer le tempo en pleine lecture ne fait pas sauter la mesure");
         {
             CarteSimulee carte (engine, 2);
             Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)));
-            lancerSurDeuxSorties (moteur);
+            lancerSurDeuxSorties (moteur, carte);
 
             DetecteurDeCoups detecteur;
             detecteur.analyser (carte.jouer (uneSeconde * 2 + uneSeconde / 4), 0);
@@ -606,7 +616,7 @@ public:
         {
             CarteSimulee carte (engine, 2);
             Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)));
-            lancerSurDeuxSorties (moteur);
+            lancerSurDeuxSorties (moteur, carte);
             carte.jouer (uneSeconde / 3);
 
             moteur.modifier ([] (Morceau& m) { m.clic.actif = false; });
@@ -624,7 +634,7 @@ public:
         {
             CarteSimulee carte (engine, 2);
             Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)));
-            lancerSurDeuxSorties (moteur);
+            lancerSurDeuxSorties (moteur, carte);
             carte.jouer (uneSeconde);
             moteur.modifier ([] (Morceau& m) { m.tempo = 150.0; });
             laisserTravailler();
@@ -634,7 +644,7 @@ public:
             expect (! moteur.enLecture());
             expectEquals (moteur.getEdit().tempoSequence.getNumTempos(), 1, "un seul tempo après l'arrêt"_fr);
 
-            moteur.lancer();
+            demarrer (moteur, carte);
             carte.jouer (uneSeconde / 10);
             expectEquals (moteur.getPosition().mesure, 1);
             expectWithinAbsoluteError (moteur.getEdit().tempoSequence.getTempo (0)->getBpm(), 150.0, 0.001);
@@ -644,7 +654,7 @@ public:
         {
             CarteSimulee carte (engine, 2);
             Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)));
-            moteur.lancer();
+            demarrer (moteur, carte);
             moteur.modifier ([] (Morceau& m) { m.mesure = Mesure::standard (7, 8); });
             expect (moteur.getMorceau().mesure == Mesure::standard (4, 4));
             moteur.arreter();
@@ -811,6 +821,9 @@ public:
             auto bouton = [&] (Bouton b) { surface.recevoir ({ T::bouton, (int) b, 1, true }); surface.recevoir ({ T::bouton, (int) b, 0, false }); };
             auto tourner = [&] (int encodeur, int pas) { surface.recevoir ({ T::encodeurTourne, encodeur, pas, false }); };
 
+            bouton (Bouton::setup);
+            expect (pilote.getPage() == Pilote::Page::clic, "Setup : page des réglages du clic"_fr);
+
             bouton (Bouton::play);
             expect (moteur.enLecture(), "Play lance la lecture"_fr);
             expectEquals (pilote.calculerEtat().boutons[(size_t) Bouton::play], palette::vert);
@@ -847,36 +860,87 @@ public:
             expectEquals (pilote.getAnnonce().titre, juce::String ("Session"), "bouton reconnu, annoncé à l'écran"_fr);
         }
 
-        beginTest ("Les pads s'allument quand on les appuie, plus fort si on frappe fort");
+        beginTest ("Session au Push : pads, scènes, effacer, dupliquer, annuler"_fr);
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine);
+            Moteur moteur (engine, morceauDeDemonstration());
             Surface surface;
             Pilote pilote (moteur, surface);
+            auto appui = [&] (Bouton b) { surface.recevoir ({ T::bouton, (int) b, 1, true }); };
+            auto relache = [&] (Bouton b) { surface.recevoir ({ T::bouton, (int) b, 0, false }); };
+            auto pad = [&] (int piste, int scene) { surface.recevoir (Evenement::pad (7 - scene, piste, 100)); surface.recevoir (Evenement::pad (7 - scene, piste, 0)); };
 
-            expectEquals (pilote.calculerEtat().pads[9], palette::indexDePiste (1, 0));
-            surface.recevoir (Evenement::pad (1, 1, 30));
-            expectEquals (pilote.calculerEtat().pads[9], palette::indexDePiste (1, 1));
-            surface.recevoir (Evenement::pad (1, 1, 127));
-            expectEquals (pilote.calculerEtat().pads[9], palette::indexDePiste (1, 3));
-            surface.recevoir (Evenement::pad (1, 1, 0));
-            expectEquals (pilote.calculerEtat().pads[9], palette::indexDePiste (1, 0));
+            expect (pilote.getPage() == Pilote::Page::mix, "page Mix par défaut"_fr);
+            expectEquals (pilote.calculerEtat().pads[(size_t) (7 * 8 + 0)], palette::indexDePiste (0, 1), "clip présent : couleur faible"_fr);
+            expectEquals (pilote.calculerEtat().pads[(size_t) (7 * 8 + 1)], palette::noir, "case vide : éteinte"_fr);
+            expectEquals (pilote.calculerEtat().boutons[43], palette::grisClair, "scène 1 avec des clips"_fr);
+
+            // Bouton de scène 2 (cc 42) : la scène part, avec le décompte
+            appui ((Bouton) 42); relache ((Bouton) 42);
+            expect (moteur.enLecture() && moteur.etatCase (0, 1).departEnAttente, "la scène Groove attend la mesure 1"_fr);
+
+            for (int i = 0; i < 30; ++i) { carte.jouer (uneSeconde / 10); moteur.avancer(); }
+
+            expect (moteur.etatCase (0, 1).joue && moteur.etatCase (1, 1).joue, "la scène joue"_fr);
+            expectEquals (pilote.calculerEtat().boutons[42], palette::vert, "scène qui joue : verte"_fr);
+
+            // Un pad lance un autre clip sur sa piste
+            pad (0, 2);
+            expect (moteur.etatCase (0, 2).departEnAttente);
+
+            // Delete + pad efface ; Undo le rend
+            appui (Bouton::deleteBouton); pad (3, 2); relache (Bouton::deleteBouton);
+            expect (moteur.getMorceau().clip (3, 2) == nullptr, "clip effacé"_fr);
+            appui (Bouton::undo); relache (Bouton::undo);
+            expect (moteur.getMorceau().clip (3, 2) != nullptr, "Undo le rend"_fr);
+
+            // Duplicate + pad : copie dans la première case vide en dessous
+            appui (Bouton::duplicate); pad (3, 2); relache (Bouton::duplicate);
+            expect (moteur.getMorceau().clip (3, 3) != nullptr && *moteur.getMorceau().clip (3, 3) == *moteur.getMorceau().clip (3, 2), "clip dupliqué en dessous"_fr);
+
+            // Duplicate tenu, source puis destination
+            appui (Bouton::duplicate); pad (0, 1); pad (7, 6); relache (Bouton::duplicate);
+            expect (moteur.getMorceau().clip (7, 6) != nullptr && moteur.getMorceau().clip (7, 6)->nom == moteur.getMorceau().clip (0, 1)->nom, "copie d'une case à l'autre");
+            expect (moteur.getMorceau().clip (0, 2) != nullptr, "la copie n'a rien effacé"_fr);
+
+            // Mute + bouton de piste
+            appui (Bouton::mute); appui ((Bouton) (premierBoutonDuBas + 1)); relache ((Bouton) (premierBoutonDuBas + 1)); relache (Bouton::mute);
+            expect (moteur.getMorceau().pistes[1].mute);
+            expectEquals (pilote.calculerEtat().boutons[(size_t) (premierBoutonDuBas + 1)], palette::noir, "piste coupée : bouton éteint"_fr);
+
+            // Quantize fait tourner le calage ; Double Loop double le clip choisi
+            appui (Bouton::quantize); relache (Bouton::quantize);
+            expect (moteur.getMorceau().calage == Calage::deuxMesures);
+            appui (Bouton::select); pad (4, 2); relache (Bouton::select);
+            appui (Bouton::doubleLoop); relache (Bouton::doubleLoop);
+            expectEquals (moteur.getMorceau().clip (4, 2)->longueurMesures, 2);
+
+            // Stop Clip + piste, puis Shift + Stop Clip
+            appui (Bouton::stopClip); appui ((Bouton) premierBoutonDuBas); relache ((Bouton) premierBoutonDuBas); relache (Bouton::stopClip);
+            expect (moteur.etatCase (0, 1).arretEnAttente || moteur.etatCase (0, 2).departEnAttente || ! moteur.etatCase (0, 1).joue);
+
+            // Bas fait défiler les scènes quand il y en a plus de 8
+            moteur.modifier ([] (Morceau& m) { m.assurerScenes (12); });
+            appui (Bouton::bas); relache (Bouton::bas);
+            expectEquals (pilote.getPremiereScene(), 1);
+            expectEquals (pilote.sceneDeLaLigne (7), 1);
         }
 
         beginTest ("Le Push et le simulateur reçoivent le même état");
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine);
+            Moteur moteur (engine, morceauDeDemonstration());
             Surface surface;
             ClientEssai push, simulateur;
             surface.ajouterClient (&push);
             surface.ajouterClient (&simulateur);
             Pilote pilote (moteur, surface);
 
-            surface.recevoir (Evenement::pad (0, 5, 100));
+            surface.recevoir (Evenement::pad (7, 0, 100));
             expect (push.etat == simulateur.etat);
             expect (push.ecran == simulateur.ecran, "même image d'écran"_fr);
-            expectEquals (push.etat.pads[5], palette::indexDePiste (5, 3));
+            expect (moteur.etatCase (0, 0).departEnAttente, "le pad a lancé le clip"_fr);
+            expect (push.etat.pads[56] == palette::indexDePiste (0, 3) || push.etat.pads[56] == palette::indexDePiste (0, 0), "le pad clignote en attendant son départ"_fr);
             expect (push.nombre > 1);
 
             surface.retirerClient (&push);
@@ -911,10 +975,362 @@ public:
     }
 };
 
+//==============================================================================
+class EssaisSession  : public juce::UnitTest
+{
+public:
+    EssaisSession()  : juce::UnitTest ("Session", "groovebox") {}
+
+    /** Morceau à 120 BPM en 4/4, sans décompte : une grosse caisse au premier temps de chaque mesure sur la piste 1,
+        un clip de nappe sur la piste 3. Le clic part sur 3-4, la musique sur 1-2 (le casque n'en reçoit presque rien). */
+    static Morceau morceauDEssai (Calage calage = Calage::mesure)
+    {
+        auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+        m.calage = calage;
+        m.musiqueDansCasqueDb = -60.0f;
+        m.assurerScenes (8);
+        m.scenes[0].clips[0] = Clip { "GC", 1, { { 0.0, 0.25, notesBatterie::grosseCaisse, 120 } } };
+        m.scenes[1].clips[0] = Clip { "GC2", 1, { { 2.0, 0.25, notesBatterie::grosseCaisse, 120 } } };
+        m.scenes[0].clips[2] = Clip { "Nappe", 2, { { 0.0, 7.5, 60, 100 } } };
+        return m;
+    }
+
+    /** Coups de la musique (sorties 1-2) et du clic (sortie 3), mesurés ensemble. */
+    struct Ecoute
+    {
+        DetecteurDeCoups musique, clic;
+
+        void analyser (const juce::AudioBuffer<float>& audio)
+        {
+            musique.analyser (audio, 0);
+            clic.analyser (audio, 2);
+        }
+
+        /** Coups du clic qui ouvrent une mesure : un sur quatre en 4/4, depuis le tout premier (la lecture part sur une mesure). */
+        std::vector<juce::int64> premiersTemps() const
+        {
+            std::vector<juce::int64> p;
+
+            for (size_t k = 0; k < clic.coups.size(); k += 4)
+                p.push_back (clic.coups[k].echantillon);
+
+            return p;
+        }
+    };
+
+    static bool proche (juce::int64 a, juce::int64 b, int tolerance = 3)  { return std::abs (a - b) <= tolerance; }
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+
+        beginTest ("Lancer une scène à l'arrêt : les clips partent à la mesure 1, ensemble"_fr);
+        {
+            CarteSimulee carte (engine, 4);
+            auto m = morceauDEssai();
+            m.clic.decompte = 1;
+            Moteur moteur (engine, m);
+
+            moteur.lancerScene (0);
+            expect (moteur.etatCase (0, 0).departEnAttente, "la case attend son départ"_fr);
+            Ecoute ecoute;
+
+            for (int i = 0; i < 4 * 48; ++i)
+            {
+                ecoute.analyser (carte.jouer (1000));
+                moteur.avancer();
+            }
+
+            expect (moteur.etatCase (0, 0).joue && moteur.etatCase (2, 0).joue, "les deux clips jouent"_fr);
+            expectEquals (moteur.sceneJouee (0), 0);
+
+            const auto mesures = ecoute.premiersTemps();
+            expectEquals ((int) mesures.size(), 2, "une mesure de décompte, puis la mesure 1"_fr);
+            expect (! ecoute.musique.coups.empty(), "la grosse caisse ne sonne pas"_fr);
+
+            if (mesures.size() >= 2 && ! ecoute.musique.coups.empty())
+                expect (proche (ecoute.musique.coups.front().echantillon, mesures[1]),
+                        "la grosse caisse doit tomber sur la mesure 1 (après la mesure de décompte) : "_fr
+                        + juce::String (ecoute.musique.coups.front().echantillon) + " au lieu de " + juce::String (mesures[1]));
+
+            auto debut = [&] (int piste) { return moteur.getEdit().getCurrentPlaybackContext() != nullptr
+                                                  ? moteur.etatCase (piste, 0).joue : false; };
+            expect (debut (0) && debut (2));
+        }
+
+        beginTest ("Un clip boucle sans dérive pendant une minute");
+        {
+            CarteSimulee carte (engine, 4);
+            Moteur moteur (engine, morceauDEssai());
+            moteur.lancerClip (0, 0);
+            Ecoute ecoute;
+
+            // Comme dans l'application, le moteur cale les clips quelques millisecondes après le départ
+            ecoute.analyser (carte.jouer (128));
+            moteur.avancer();
+
+            for (int i = 0; i < 60; ++i)
+                ecoute.analyser (carte.jouer (uneSeconde));
+
+            const auto& coups = ecoute.musique.coups;
+            expect (coups.size() >= 29 && coups.size() <= 31, "nombre de coups : "_fr + juce::String ((int) coups.size()));
+            double ecartMax = 0.0;
+
+            for (size_t k = 1; k < coups.size(); ++k)
+                ecartMax = std::max (ecartMax, std::abs ((double) (coups[k].echantillon - coups[0].echantillon) - (double) k * 96000.0));
+
+            expect (ecartMax <= 1.5, "dérive de la boucle : "_fr + juce::String (ecartMax, 2) + " échantillons"_fr);
+
+            const auto mesures = ecoute.premiersTemps();
+            expect (! mesures.empty() && proche (coups.front().echantillon, mesures.front()), "première grosse caisse sur la mesure 1 : "_fr
+                    + juce::String (coups.empty() ? -1 : coups.front().echantillon) + " / clic " + juce::String (mesures.empty() ? -1 : mesures.front())
+                    + " (" + juce::String ((int) ecoute.clic.coups.size()) + " clics)");
+            logMessage ("  " + juce::String ((int) coups.size()) + " boucles, écart maximal "_fr + juce::String (ecartMax, 2) + " échantillon(s)"_fr);
+        }
+
+        for (auto [calage, attendu] : { std::pair { Calage::temps, 1 }, std::pair { Calage::mesure, 4 },
+                                        std::pair { Calage::deuxMesures, 8 }, std::pair { Calage::quatreMesures, 16 } })
+        {
+            beginTest ("Lancement en pleine lecture, "_fr + nomDuCalage (calage).toLowerCase());
+            CarteSimulee carte (engine, 4);
+            Moteur moteur (engine, morceauDEssai (calage));
+            demarrer (moteur, carte);
+            Ecoute ecoute;
+
+            // On attend 5,3 s (mesure 3, deuxième temps), puis on lance la grosse caisse décalée (au troisième temps de son clip)
+            for (int i = 0; i < 53; ++i)
+                ecoute.analyser (carte.jouer (uneSeconde / 10));
+
+            const auto instantDuLancement = (juce::int64) 128 + 53 * (uneSeconde / 10);
+            moteur.lancerClip (0, 1);
+
+            for (int i = 0; i < 120; ++i)
+                ecoute.analyser (carte.jouer (uneSeconde / 10));
+
+            // Le clic donne la grille : chaque temps du clic est une limite possible
+            const auto& temps = ecoute.clic.coups;
+            juce::int64 premierTempsApres = -1;
+            int indexDuTemps = -1;
+
+            for (size_t k = 0; k < temps.size(); ++k)
+                if (temps[k].echantillon > instantDuLancement)
+                {
+                    premierTempsApres = temps[k].echantillon;
+                    indexDuTemps = (int) k;
+                    break;
+                }
+
+            // Temps 0 du clic = mesure 1, temps 1. Prochaine limite du calage, comptée depuis la mesure 1
+            int limite = indexDuTemps;
+
+            while (limite % attendu != 0)
+                ++limite;
+
+            expect (limite < (int) temps.size(), "grille du clic incomplète"_fr);
+            const auto departAttendu = temps[(size_t) limite].echantillon + 2 * 24000;   // la note est au 3e temps du clip
+            expect (! ecoute.musique.coups.empty() && proche (ecoute.musique.coups.front().echantillon, departAttendu),
+                    "départ à "_fr + (ecoute.musique.coups.empty() ? juce::String ("rien") : juce::String (ecoute.musique.coups.front().echantillon))
+                    + " au lieu de " + juce::String (departAttendu) + " (temps " + juce::String (limite) + ")");
+            juce::ignoreUnused (premierTempsApres);
+        }
+
+        beginTest ("Arrêter une piste : elle se tait à la prochaine mesure");
+        {
+            CarteSimulee carte (engine, 4);
+            Moteur moteur (engine, morceauDEssai());
+            moteur.lancerClip (0, 0);
+            Ecoute ecoute;
+
+            for (int i = 0; i < 45; ++i)
+            {
+                ecoute.analyser (carte.jouer (uneSeconde / 10));
+                moteur.avancer();
+            }
+
+            moteur.arreterPiste (0);
+            expect (moteur.etatCase (0, 0).arretEnAttente, "l'arrêt attend la mesure"_fr);
+            const auto avant = ecoute.musique.coups.size();
+
+            for (int i = 0; i < 60; ++i)
+                ecoute.analyser (carte.jouer (uneSeconde / 10));
+
+            expect (ecoute.musique.coups.size() == avant, "plus aucun coup après l'arrêt : "_fr + juce::String ((int) (ecoute.musique.coups.size() - avant)));
+            expect (! moteur.etatCase (0, 0).joue);
+            expect (moteur.enLecture(), "la lecture continue"_fr);
+        }
+
+        beginTest ("Le réglage « musique dans le casque » vaut pour toutes les pistes"_fr);
+        {
+            CarteSimulee carte (engine, 4);
+            auto m = morceauDEssai();
+            m.clic.actif = false;
+            m.musiqueDansCasqueDb = 0.0f;
+            Moteur moteur (engine, m);
+            moteur.lancerClip (0, 0);
+
+            for (int i = 0; i < 10; ++i) { carte.jouer (uneSeconde / 10); moteur.avancer(); }
+
+            auto plein = carte.jouer (2 * uneSeconde);
+            expectWithinAbsoluteError (niveauEfficace (plein, 2), niveauEfficace (plein, 0), 0.002f, "à 0 dB, le casque reçoit la musique comme la sono"_fr);
+
+            moteur.modifier ([] (Morceau& mm) { mm.musiqueDansCasqueDb = -20.0f; });
+            carte.jouer (uneSeconde / 2);
+            auto bas = carte.jouer (2 * uneSeconde);
+            expectWithinAbsoluteError (niveauEfficace (bas, 2) / niveauEfficace (bas, 0), 0.1f, 0.01f, "à -20 dB, dix fois moins fort"_fr);
+        }
+
+        beginTest ("Mute et Solo");
+        {
+            CarteSimulee carte (engine, 4);
+            Moteur moteur (engine, morceauDEssai());
+            moteur.lancerClip (0, 0);
+
+            for (int i = 0; i < 10; ++i) { carte.jouer (uneSeconde / 10); moteur.avancer(); }
+
+            auto niveau = [&] { carte.jouer (uneSeconde / 2); laisserTravailler (20); return niveauEfficace (carte.jouer (2 * uneSeconde), 0); };
+            expect (niveau() > 0.01f, "la grosse caisse sonne"_fr);
+
+            moteur.modifier ([] (Morceau& m) { m.pistes[0].mute = true; });
+            expect (niveau() < 1.0e-4f, "piste coupée : silence"_fr);
+
+            moteur.modifier ([] (Morceau& m) { m.pistes[0].mute = false; m.pistes[1].solo = true; });
+            expect (niveau() < 1.0e-4f, "une autre piste en solo : silence"_fr);
+
+            moteur.modifier ([] (Morceau& m) { m.pistes[0].solo = true; });
+            expect (niveau() > 0.01f, "deux pistes en solo : la grosse caisse revient"_fr);
+        }
+
+        beginTest ("La voix B de chaque piste a son instrument et reste muette");
+        {
+            CarteSimulee carte (engine, 4);
+            Moteur moteur (engine, morceauDeDemonstration());
+            moteur.lancerScene (2);
+
+            for (int i = 0; i < 30; ++i) { carte.jouer (uneSeconde / 10); moteur.avancer(); }
+
+            for (int p = 0; p < nombreDePistes; ++p)
+            {
+                auto b = moteur.voix (p, 1);
+                expect (b != nullptr && b->pluginList.getPluginsOfType<InstrumentProvisoire>().size() == 1, "instrument de la voix B"_fr);
+
+                for (auto c : b->getClipSlotList().getClipSlots())
+                    expect (c->getClip() == nullptr, "aucun clip sur la voix B"_fr);
+            }
+
+            expect (moteur.etatCase (3, 2).joue, "la scène Plein joue");
+        }
+
+        beginTest ("Annuler et rétablir, mouvements d'encodeur compris"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            const auto depart = morceauDeDemonstration();
+            Moteur moteur (engine, depart);
+
+            for (int i = 0; i < 12; ++i)
+                moteur.modifier ([] (Morceau& m) { m.tempo += 1.0; }, "tempo");
+
+            moteur.modifier ([] (Morceau& m) { m.scenes[1].clips[1].reset(); });
+            moteur.modifier ([] (Morceau& m) { m.pistes[2].mute = true; });
+            moteur.modifier ([] (Morceau& m) { m.scenes[0].nom = "Ouverture"; });
+            const auto fin = moteur.getMorceau();
+
+            int etapes = 0;
+
+            while (moteur.annuler())
+                ++etapes;
+
+            expectEquals (etapes, 4, "12 crans d'encodeur = une seule étape"_fr);
+            expect (moteur.getMorceau() == moteur.getMorceau() && moteur.getMorceau().tempo == 120.0);
+            expect (moteur.getMorceau().clip (1, 1) != nullptr, "le clip effacé revient"_fr);
+
+            while (moteur.retablir()) {}
+
+            expect (moteur.getMorceau() == fin, "tout est rétabli"_fr);
+            expect (moteur.getMorceau().clip (1, 1) == nullptr);
+        }
+
+        beginTest ("Bibliothèque : dossiers, copies de secours, renommage, plantage"_fr);
+        {
+            auto racine = juce::File::createTempFile ("groovebox-morceaux");
+            {
+                Bibliotheque bib (racine);
+                expect (! bib.marquerOuverture(), "première ouverture : pas de plantage"_fr);
+
+                auto m = morceauDeDemonstration();
+                expect (bib.enregistrer (m));
+                expect (bib.existe ("Démo"_fr));
+                expect (bib.ouvrir ("Démo"_fr).has_value() && *bib.ouvrir ("Démo"_fr) == m);
+                expectEquals (bib.copiesDeSecours ("Démo"_fr).size(), 1, "une copie de secours"_fr);
+                expect (bib.enregistrer (m));
+                expectEquals (bib.copiesDeSecours ("Démo"_fr).size(), 1, "pas une copie à chaque sauvegarde"_fr);
+
+                expect (bib.renommer ("Démo"_fr, "Concert"));
+                expect (bib.existe ("Concert") && ! bib.existe ("Démo"_fr));
+                expectEquals (bib.nomLibre ("Morceau"), juce::String ("Morceau 1"));
+                bib.retenirDernier ("Concert");
+                expectEquals (bib.dernierOuvert(), juce::String ("Concert"));
+            }
+            {
+                Bibliotheque bib (racine);
+                expect (bib.marquerOuverture(), "fermeture brusque repérée"_fr);
+                bib.marquerFermeture();
+            }
+            {
+                Bibliotheque bib (racine);
+                expect (! bib.marquerOuverture(), "fermeture normale"_fr);
+            }
+            racine.deleteRecursively();
+        }
+
+        beginTest ("Sauvegarder pendant la lecture ne fait aucune coupure");
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDeDemonstration());
+            auto racine = juce::File::createTempFile ("groovebox-morceaux");
+            Bibliotheque bib (racine);
+            moteur.lancerScene (2);
+
+            for (int i = 0; i < 30; ++i) { carte.jouer (uneSeconde / 10); moteur.avancer(); }
+
+            float plusFaible = 1.0f;
+
+            for (int i = 0; i < 40; ++i)
+            {
+                bib.enregistrer (moteur.getMorceau());
+                plusFaible = std::min (plusFaible, niveauEfficace (carte.jouer (uneSeconde / 10), 0));
+            }
+
+            expect (plusFaible > 0.01f, "le son reste présent pendant les sauvegardes"_fr);
+            racine.deleteRecursively();
+        }
+
+        beginTest ("Doubler un clip recopie ses notes");
+        {
+            Clip c { "x", 1, { { 0.0, 0.5, 60, 100 }, { 2.0, 0.5, 62, 100 } } };
+            expect (c.doubler (4));
+            expectEquals (c.longueurMesures, 2);
+            expectEquals ((int) c.notes.size(), 4);
+            expectEquals (c.notes[3].debut, 6.0);
+            c.longueurMesures = 16;
+            expect (! c.doubler (4), "16 mesures au plus");
+        }
+
+        beginTest ("Le morceau de démonstration se sauvegarde et se recharge à l'identique"_fr);
+        {
+            const auto demo = morceauDeDemonstration();
+            const auto relu = Morceau::depuisJson (juce::JSON::parse (juce::JSON::toString (demo.versJson())));
+            expect (relu == demo);
+            expect (demo.scenes.size() >= 8);
+            expect (demo.clip (0, 1) != nullptr && demo.clip (3, 2) != nullptr);
+        }
+    }
+};
+
 static EssaisModele essaisModele;
 static EssaisSorties essaisSorties;
 static EssaisHorloge essaisHorloge;
 static EssaisPush essaisPush;
+static EssaisSession essaisSession;
 
 } // namespace groovebox
 

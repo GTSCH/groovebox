@@ -5,11 +5,12 @@ namespace groovebox
 {
 
 FenetrePrincipale::FenetrePrincipale (te::Engine& engine, Moteur& moteur,
-                                      std::function<void()> ouvrirSimulateur, std::function<juce::String()> etatDuPush)
+                                      ActionsMorceaux actions, std::function<juce::String()> etatDuPush)
 {
     pageJeu = new PageJeu (moteur);
-    pageJeu->ouvrirSimulateur = std::move (ouvrirSimulateur);
+    pageJeu->ouvrirSimulateur = actions.ouvrirSimulateur;
     pageJeu->etatDuPush = std::move (etatDuPush);
+    onglets.addTab ("Session", couleurFond, new PageSession (moteur, std::move (actions)), true);
     onglets.addTab ("Jeu", couleurFond, pageJeu, true);
     onglets.addTab ("Carte son", couleurFond, new PageCarteSon (engine, moteur), true);
     onglets.setTabBarDepth (40);
@@ -18,7 +19,7 @@ FenetrePrincipale::FenetrePrincipale (te::Engine& engine, Moteur& moteur,
     addAndMakeVisible (onglets);
 
     setWantsKeyboardFocus (true);
-    setSize (820, 660);
+    setSize (980, 680);
 }
 
 void FenetrePrincipale::resized()
