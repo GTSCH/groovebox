@@ -459,6 +459,7 @@ bool Moteur::demarrerPrise()
     if (! enregistrementAudio->demarrer (dossier, engine.getDeviceManager().getSampleRate(), p.avecMicros))
         juce::Logger::writeToLog ("Prise : son impossible à enregistrer dans "_fr + dossier.getFullPathName());
 
+    p.secondesDuDebut = edit->tempoSequence.toTime (te::BeatPosition::fromBeats (p.debut)).inSeconds();
     prise = std::move (p);
     dossierDeLaPrise = dossier;
     instantDuDebutDeLaPrise = juce::Time::getMillisecondCounterHiRes();

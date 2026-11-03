@@ -12,7 +12,8 @@ public:
     explicit LecteurDePrise (juce::AudioDeviceManager&);
     ~LecteurDePrise() override;
 
-    bool ecouter (const juce::File& dossier);
+    /** Écoute depuis un instant (secondes dans les fichiers), jusqu'à un autre si on le donne. */
+    bool ecouter (const juce::File& dossier, double depuis = 0.0, std::optional<double> jusqua = std::nullopt);
     void arreter();
     bool enCours() const;
     double position() const;
@@ -33,6 +34,7 @@ private:
     juce::CriticalSection verrou;
     double frequence = 48000.0;
     int taille = 512;
+    std::optional<double> fin;
 };
 
 /** Onglet « Prises » : les prises du morceau ouvert. Enregistrer, réécouter, renommer, retrouver dans le Finder, jeter. */

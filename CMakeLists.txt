@@ -33,6 +33,7 @@ set (SOURCES_MOTEUR
     source/moteur/VoixPlugin.cpp
     source/moteur/EnregistreurAudio.cpp
     source/modele/Prise.cpp
+    source/modele/Deroule.cpp
     source/moteur/BipPlugin.cpp
     source/moteur/ClicPlugin.cpp
     source/moteur/InstrumentProvisoire.cpp
@@ -89,6 +90,7 @@ target_sources (groovebox PRIVATE
     source/app/FenetrePrincipale.cpp
     source/app/PageJeu.cpp
     source/app/PagePrises.cpp
+    source/app/PageRetouche.cpp
     source/app/PageCarteSon.cpp
     source/app/PageSession.cpp
     source/app/Simulateur.cpp)
@@ -104,6 +106,7 @@ target_sources (groovebox_essais PRIVATE
     ${SOURCES_MOTEUR}
     source/app/Simulateur.cpp
     source/app/PagePrises.cpp
+    source/app/PageRetouche.cpp
     essais/Essais.cpp)
 target_include_directories (groovebox_essais PRIVATE source)
 target_compile_definitions (groovebox_essais PRIVATE ${DEFINITIONS_COMMUNES} JUCE_MODAL_LOOPS_PERMITTED=1)

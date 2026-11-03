@@ -126,6 +126,11 @@ juce::Array<juce::var> ecarts::entre (const juce::var& avant, const juce::var& a
     return liste;
 }
 
+juce::var ecarts::copie (const juce::var& v)
+{
+    return copieProfonde (v);
+}
+
 juce::var ecarts::appliquer (const juce::var& json, const juce::var& liste)
 {
     auto resultat = copieProfonde (json);
@@ -186,6 +191,34 @@ double Prise::dureeEnSecondes() const
     return juce::jmax (0.0, fin - debut) / parSeconde;
 }
 
+double Prise::secondesDansLeSon (double temps) const
+{
+    const auto parSeconde = [this] (double tempo) { return tempo / 60.0 * morceauDeDepart.mesure.denominateur / 4.0; };
+    double tempo = morceauDeDepart.tempo;
+    double position = debut;
+    double secondes = secondesDuDebut >= 0.0 ? secondesDuDebut : debut / parSeconde (tempo);
+
+    // Le tempo change là où il a été tourné (le moteur le prend 50 ms plus tard : négligeable ici)
+    for (auto& e : evenements)
+    {
+        if (e.genre != EvenementDePrise::Genre::reglages || e.temps >= temps)
+            continue;
+
+        if (auto t = e.changements.getArray())
+            for (auto& c : *t)
+                if (auto paire = c.getArray(); paire != nullptr && paire->size() == 2 && (*paire)[0].toString() == "/tempo")
+                {
+                    const auto jusqua = juce::jmax (position, e.temps);
+                    secondes += (jusqua - position) / parSeconde (tempo);
+                    position = jusqua;
+                    tempo = (double) (*paire)[1];
+                }
+    }
+
+    secondes += (temps - position) / parSeconde (tempo);
+    return secondes - debutDuSon;
+}
+
 juce::var Prise::versJson() const
 {
     auto o = new juce::DynamicObject();
@@ -196,6 +229,7 @@ juce::var Prise::versJson() const
     o->setProperty ("debut", debut);
     o->setProperty ("fin", fin);
     o->setProperty ("debutDuSon", debutDuSon);
+    o->setProperty ("secondesDuDebut", secondesDuDebut);
     o->setProperty ("avecMicros", avecMicros);
 
     juce::Array<juce::var> scenes;
@@ -226,6 +260,7 @@ std::optional<Prise> Prise::depuisJson (const juce::var& v)
     p.debut = v.getProperty ("debut", 0.0);
     p.fin = v.getProperty ("fin", 0.0);
     p.debutDuSon = v.getProperty ("debutDuSon", 0.0);
+    p.secondesDuDebut = v.getProperty ("secondesDuDebut", -1.0);
     p.avecMicros = v.getProperty ("avecMicros", false);
 
     if (auto t = v.getProperty ("scenesDeDepart", {}).getArray())

@@ -44,6 +44,7 @@ struct Prise
     Morceau morceauDeDepart;                ///< Le morceau tel qu'il était au début de la prise
     std::array<int, nombreDePistes> scenesDeDepart;   ///< Scène qui jouait sur chaque piste au début (-1 : rien)
     double debutDuSon = 0.0;                ///< Instant de la ligne du temps (secondes) du premier échantillon des fichiers son
+    double secondesDuDebut = -1.0;          ///< Instant de la ligne du temps (secondes) du début de la prise (-1 : inconnu)
     bool avecMicros = false;
     std::vector<EvenementDePrise> evenements;
 
@@ -51,6 +52,9 @@ struct Prise
 
     /** Durée en secondes, au tempo de départ (pour l'affichage). */
     double dureeEnSecondes() const;
+
+    /** Position dans les fichiers son (secondes) d'un temps du moteur, en suivant les changements de tempo de la prise. */
+    double secondesDansLeSon (double temps) const;
 
     juce::var versJson() const;
     static std::optional<Prise> depuisJson (const juce::var&);
@@ -64,6 +68,9 @@ namespace ecarts
 {
     /** Liste de [chemin, nouvelle valeur] ; les chemins sont du genre « pistes/2/macros/3 ». */
     juce::Array<juce::var> entre (const juce::var& avant, const juce::var& apres);
+
+    /** Copie indépendante (les tableaux et objets JSON sont sinon partagés entre copies). */
+    juce::var copie (const juce::var&);
 
     /** Applique des écarts : renvoie le JSON modifié. */
     juce::var appliquer (const juce::var& json, const juce::var& liste);

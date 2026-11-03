@@ -33,7 +33,7 @@ LecteurDePrise::~LecteurDePrise()
     lecture.stopThread (2000);
 }
 
-bool LecteurDePrise::ecouter (const juce::File& dossier)
+bool LecteurDePrise::ecouter (const juce::File& dossier, double depuis, std::optional<double> jusqua)
 {
     arreter();
     const juce::File fichiers[2] = { dossier.getChildFile ("sortie.wav"), dossier.getChildFile ("micros.wav") };
@@ -57,8 +57,12 @@ bool LecteurDePrise::ecouter (const juce::File& dossier)
 
     for (size_t k = 0; k < 2; ++k)
         if (sources[k] != nullptr)
+        {
+            transports[k].setPosition (juce::jmax (0.0, depuis));
             transports[k].start();
+        }
 
+    fin = jusqua;
     return ouvert;
 }
 
@@ -78,6 +82,9 @@ void LecteurDePrise::arreter()
 
 bool LecteurDePrise::enCours() const
 {
+    if (fin && transports[0].getCurrentPosition() >= *fin)
+        return false;
+
     return transports[0].isPlaying() || transports[1].isPlaying();
 }
 

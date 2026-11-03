@@ -14,6 +14,7 @@
 #include "push/PushMidi.h"
 #include "app/Simulateur.h"
 #include "app/PagePrises.h"
+#include "app/PageRetouche.h"
 #include "moteur/SonsDeSynthe.h"
 
 namespace groovebox
@@ -3854,6 +3855,240 @@ public:
     }
 };
 
+//==============================================================================
+class EssaisRetouche  : public juce::UnitTest
+{
+public:
+    EssaisRetouche()  : juce::UnitTest ("Retouche", "groovebox") {}
+
+    static juce::String texte (const juce::var& v)      { return juce::JSON::toString (v, true); }
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+        using G = EvenementDePrise::Genre;
+
+        // Une prise jouée par le moteur : scène 1, des crans de volume, fondu vers la scène 2, coupe vers la scène 3, un clip seul
+        const auto racine = EssaisPrises::dossierDEssai();
+        juce::File dossierDeLaPrise;
+        Morceau fin;
+        double mesure1 = 0.0;
+
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = EssaisEnchainements::morceauDEnchainement();
+            m.scenes[0].nom = "Intro";
+            m.scenes[1].nom = "Groove";
+            m.scenes[2].nom = "Plein";
+            m.scenes[0].clips[2] = EssaisEnchainements::clipTenu ("Do", 60);
+            m.scenes[1].clips[2] = EssaisEnchainements::clipTenu ("Sol", 67);
+            m.scenes[2].clips[2] = EssaisEnchainements::clipTenu ("Mi", 64);
+            m.scenes[1].clips[1] = EssaisEnchainements::clipTenu ("Basse", 36);
+            m.scenes[0].clips[3] = EssaisEnchainements::clipTenu ("Lead", 72);
+            Moteur moteur (engine, m, &banqueEssai());
+            moteur.dossierDesPrises = [racine] { return racine; };
+            mesure1 = moteur.tempsDeLaMesure1();
+
+            moteur.demarrerPrise();
+            moteur.lancerScene (0);
+            EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde);
+
+            for (int k = 1; k <= 6; ++k)
+            {
+                moteur.modifier ([k] (Morceau& mm) { mm.pistes[2].volumeDb = -2.0f * (float) k; }, "encodeur 2");
+                EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde / 4);
+            }
+
+            // La mesure dure 2 s : chaque lancement tombe un peu avant une limite de mesure
+            EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde);       // 3,5 s
+            moteur.lancerScene (1, EssaisEnchainements::enchainement (TypeEnchainement::fondu, 1));
+            EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde * 4);   // 7,5 s
+            moteur.lancerScene (2, EssaisEnchainements::enchainement (TypeEnchainement::coupe, 1));
+            EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde * 2);   // 9,5 s
+            moteur.lancerClip (3, 0);
+            EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde * 2);   // 11,5 s
+            fin = moteur.getMorceau();
+            dossierDeLaPrise = *moteur.arreterPrise();
+            moteur.arreter();
+        }
+
+        const auto prise = *Prise::charger (dossierDeLaPrise.getChildFile ("prise.json"));
+        const auto deroule = retouche::decouper (prise, dossierDeLaPrise.getFileName());
+
+        beginTest ("Découper une prise : une section par scène jouée"_fr);
+        {
+            expectEquals ((int) deroule.sections.size(), 3);
+
+            if (deroule.sections.size() == 3)
+            {
+                const auto& s = deroule.sections;
+                expect (s[0].scene == 0 && s[1].scene == 1 && s[2].scene == 2, "les scènes, dans l'ordre"_fr);
+                expect (s[0].nom == "Intro" && s[1].nom == "Groove" && s[2].nom == "Plein", "nommées comme les scènes");
+                expectWithinAbsoluteError (s[0].longueur, 8.0, 1.0e-6, "Intro : 2 mesures");
+                expectWithinAbsoluteError (s[1].longueur, 8.0, 1.0e-6, "Groove : 2 mesures (le calage tombe sur la mesure 5)");
+                expectWithinAbsoluteError (s[0].mesures(), 2.0, 1.0e-6);
+                expectWithinAbsoluteError (deroule.longueur(), prise.fin - prise.debut, 1.0e-6, "toute la prise");
+                expect (s[1].entree && s[1].entree->type == TypeEnchainement::fondu, "Groove entre en fondu");
+                expect (s[2].entree && s[2].entree->type == TypeEnchainement::coupe, "Plein entre en coupe");
+                expect (s[1].avance > 0.5 && s[1].avance < 4.0, "lancé un peu avant la mesure : " + juce::String (s[1].avance, 2));
+                expectEquals (s[1].scenesDeDepart[2], 1, "au début de Groove, la nappe joue Groove (la scène qui ouvre la section)");
+                expectEquals (s[1].scenesDeDepart[3], 0, "le lead d'Intro continue (case vide dans Groove)");
+                expectEquals (s[2].scenesDeDepart[1], 1);
+                expectWithinAbsoluteError (s[1].debutDansLaPrise, mesure1 + 8.0, 1.0e-6);
+
+                int reglages = 0, lancements = 0;
+
+                for (auto& e : s[0].evenements)
+                    reglages += e.genre == G::reglages ? 1 : 0;
+
+                for (auto& e : s[2].evenements)
+                    if (e.genre == G::scene && e.piste == 3)
+                    {
+                        ++lancements;
+                        expect (e.cale && std::abs (*e.cale - 4.0) < 1.0e-6, "le clip seul, calé sur la 2e mesure de Plein : " + juce::String (e.cale.value_or (-1.0)));
+                    }
+
+                expectEquals (reglages, 6, "les crans de volume sont dans Intro");
+                expectEquals (lancements, 1, "le clip seul est dans Plein");
+
+                // L'état de chaque section = l'état de la précédente plus ses réglages ; à la fin, le morceau de la fin
+                for (size_t i = 0; i < s.size(); ++i)
+                {
+                    auto json = s[i].etat;
+
+                    for (auto& e : s[i].evenements)
+                        if (e.genre == G::reglages)
+                            json = ecarts::appliquer (json, e.changements);
+
+                    const auto suivant = i + 1 < s.size() ? Morceau::depuisJson (s[i + 1].etat) : fin;
+                    expect (Morceau::depuisJson (json) == suivant, "les sections s'enchaînent sans rien perdre (" + juce::String ((int) i) + ")");
+                }
+
+                expectWithinAbsoluteError (Morceau::depuisJson (s[1].etat).pistes[2].volumeDb, -12.0f, 1.0e-4f, "Groove part du volume laissé par Intro");
+            }
+        }
+
+        beginTest ("Couper, supprimer, déplacer, répéter"_fr);
+        {
+            auto d = deroule;
+            expect (retouche::couper (d, 0, 4.0), "couper Intro à la 2e mesure");
+            expectEquals ((int) d.sections.size(), 4);
+            expectWithinAbsoluteError (d.sections[0].longueur, 4.0, 1.0e-6);
+            expectWithinAbsoluteError (d.sections[1].longueur, 4.0, 1.0e-6);
+            expect (! d.sections[1].entree.has_value() && d.sections[1].scene == 0, "la seconde moitié est une suite d'Intro");
+            expectWithinAbsoluteError (d.longueur(), deroule.longueur(), 1.0e-6, "rien n'est perdu");
+            expectWithinAbsoluteError (d.sections[1].debutDansLaPrise, deroule.sections[0].debutDansLaPrise + 4.0, 1.0e-6, "le son de la suite au bon endroit");
+
+            // L'état de la suite : celui d'Intro plus les crans de la première mesure et demie
+            auto json = d.sections[0].etat;
+
+            for (auto& e : d.sections[0].evenements)
+                if (e.genre == G::reglages)
+                    json = ecarts::appliquer (json, e.changements);
+
+            expect (Morceau::depuisJson (json) == Morceau::depuisJson (d.sections[1].etat), "la suite part de là où on a coupé");
+            expect (! retouche::couper (d, 0, 0.0) && ! retouche::couper (d, 0, 4.0), "pas de coupe au bord");
+
+            expect (retouche::deplacer (d, 3, -1));
+            expect (d.sections[2].scene == 2 && d.sections[3].scene == 1, "Plein avant Groove");
+            expect (! retouche::deplacer (d, 0, -1) && ! retouche::deplacer (d, 3, 1), "rien au-delà des bords");
+
+            expect (retouche::repeter (d, 0));
+            expectEquals ((int) d.sections.size(), 5);
+            expect (texte (d.sections[0].versJson()) == texte (d.sections[1].versJson()), "la répétition est une copie");
+
+            expect (retouche::supprimer (d, 1));
+            expectEquals ((int) d.sections.size(), 4);
+            expect (! retouche::supprimer (d, 9));
+        }
+
+        beginTest ("Courbes : lister, lisser, effacer"_fr);
+        {
+            auto d = deroule;
+            auto& intro = d.sections[0];
+            const auto courbes = retouche::courbes (intro, 2);
+            expect (courbes.contains ("/pistes/2/volumeDb"), "le volume de la nappe est une courbe");
+            expect (retouche::courbes (intro, 1).isEmpty(), "rien ne bouge sur la basse");
+            expectEquals (retouche::nomDuReglage ("/pistes/2/volumeDb"), juce::String ("Volume"));
+            expectEquals (retouche::nomDuReglage ("/pistes/4/macros/3"), juce::String ("Macro 4"));
+            expectEquals (retouche::nomDuReglage ("/tempo"), juce::String ("Tempo"));
+
+            const auto avant = retouche::points (intro, "/pistes/2/volumeDb");
+            expectEquals ((int) avant.size(), 7, "valeur de départ et 6 crans");
+            expectWithinAbsoluteError (avant.front().second, 0.0, 1.0e-6);
+
+            // Lisser une répétition ne touche pas l'original
+            expect (retouche::repeter (d, 0));
+            retouche::lisser (d.sections[1], "/pistes/2/volumeDb");
+            const auto lisse = retouche::points (d.sections[1], "/pistes/2/volumeDb");
+            const auto original = retouche::points (d.sections[0], "/pistes/2/volumeDb");
+            expectWithinAbsoluteError (original[1].second, avant[1].second, 1.0e-9, "l'original n'a pas bougé");
+            expect (std::abs (lisse[1].second - avant[1].second) > 0.1, "les crans sont adoucis");
+            expectWithinAbsoluteError (lisse.back().second, avant.back().second, 1.0e-6, "la dernière valeur reste : la suite s'enchaîne sans saut");
+
+            retouche::effacer (d.sections[0], "/pistes/2/volumeDb");
+            expect (retouche::courbes (d.sections[0], 2).isEmpty(), "courbe effacée");
+            expect (! retouche::courbes (d.sections[1], 2).isEmpty(), "la répétition garde la sienne");
+
+            int reglages = 0;
+
+            for (auto& e : d.sections[0].evenements)
+                reglages += e.genre == G::reglages ? 1 : 0;
+
+            expectEquals (reglages, 0, "les gestes vides disparaissent");
+        }
+
+        beginTest ("Un déroulé s'enregistre et se relit à l'identique ; le son se retrouve au bon endroit"_fr);
+        {
+            auto d = deroule;
+            d.nom = "Version courte";
+            retouche::couper (d, 0, 4.0);
+            const auto fichier = racine.getChildFile ("deroules").getChildFile ("Version courte.json");
+            expect (d.enregistrer (fichier));
+            const auto relu = Deroule::charger (fichier);
+            expect (relu.has_value() && texte (relu->versJson()) == texte (d.versJson()), "relu tel quel");
+
+            // Groove commence 2 mesures (4 s à 120 BPM) après le début de la prise
+            const double debut = prise.secondesDansLeSon (prise.debut);
+            const double groove = prise.secondesDansLeSon (deroule.sections[1].debutDansLaPrise);
+            expectWithinAbsoluteError (groove - debut, 4.0, 1.0e-6, "2 mesures plus loin dans le son");
+            expect (debut >= 0.0 && debut < 0.2, "le son commence avec la prise : " + juce::String (debut, 3));
+
+            auto avecTempo = prise;
+            EvenementDePrise e;
+            e.genre = G::reglages;
+            e.temps = prise.debut + 4.0;
+            juce::Array<juce::var> paire { juce::var ("/tempo"), juce::var (60.0) };
+            e.changements = juce::Array<juce::var> { juce::var (paire) };
+            avecTempo.evenements.insert (avecTempo.evenements.begin(), e);
+            expectWithinAbsoluteError (avecTempo.secondesDansLeSon (prise.debut + 8.0) - debut, 2.0 + 4.0, 1.0e-6, "le tempo qui change est suivi");
+        }
+
+        beginTest ("L'onglet Retouche montre la prise en sections et ses courbes"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, EssaisEnchainements::morceauDEnchainement(), &banqueEssai());
+            moteur.dossierDesPrises = [racine] { return racine; };
+            PageRetouche page (engine, moteur);
+            page.setSize (980, 640);
+            page.ouvrirPrise (dossierDeLaPrise);
+            expect (page.getDeroule() && page.getDeroule()->sections.size() == 3, "la prise ouverte en 3 sections");
+            page.choisirSection (0);
+            expectEquals (page.getLigneChoisie(), 2, "la ligne de la nappe, où le volume bouge, est choisie");
+
+            auto image = page.createComponentSnapshot (page.getLocalBounds());
+            const auto fichier = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("groovebox-onglet-retouche.png");
+            fichier.deleteFile();
+            juce::FileOutputStream flux (fichier);
+            juce::PNGImageFormat().writeImageToStream (image, flux);
+            logMessage ("  image de l'onglet : " + fichier.getFullPathName());
+
+            page.ouvrirDeroule (racine.getChildFile ("deroules").getChildFile ("Version courte.json"));
+            expect (page.getDeroule() && page.getDeroule()->sections.size() == 4, "le déroulé enregistré se rouvre");
+        }
+    }
+};
+
 static EssaisModele essaisModele;
 static EssaisSorties essaisSorties;
 static EssaisHorloge essaisHorloge;
@@ -3867,6 +4102,7 @@ static EssaisMelodies essaisMelodies;
 static EssaisEffets essaisEffets;
 static EssaisEnchainements essaisEnchainements;
 static EssaisPrises essaisPrises;
+static EssaisRetouche essaisRetouche;
 
 } // namespace groovebox
 
