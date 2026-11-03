@@ -72,6 +72,41 @@ Pilote::Pilote (Moteur& m, Surface& s)  : moteur (m), surface (s)
                                 [modifier, i] (int pas, bool fin) { modifier (i, [=] (Morceau& m) { m.pistes[(size_t) i].volumeDb += (float) pas * (fin ? 0.05f : 0.3f); }); },
                                 palette::couleurDePiste (i) };
 
+    // Page Device : le pad choisi de la batterie, puis le kit entier (encodeurs 7 et 8)
+    auto pad = [this] () -> const PadBatterie& { return moteur.getMorceau().pistes[(size_t) pisteChoisie].kit.pads[(size_t) padChoisi]; };
+    auto kit = [this] () -> const Kit& { return moteur.getMorceau().pistes[(size_t) pisteChoisie].kit; };
+    auto pourcent = [] (float v) { return juce::String (juce::roundToInt (v * 100.0f)) + " %"; };
+
+    pageDevice[0] = { "Hauteur", [pad] { const auto h = pad().hauteur; return (h > 0.04f ? "+" : "") + juce::String (h, 1).replaceCharacter ('.', ',') + " dt"; },
+                      [pad] { return (pad().hauteur + 24.0f) / 48.0f; },
+                      [this] (int pas, bool fin) { modifierPad (0, [=] (PadBatterie& p) { p.hauteur = juce::jlimit (-24.0f, 24.0f, p.hauteur + (float) pas * (fin ? 0.01f : 0.1f)); }); }, actif };
+    pageDevice[1] = { "Décroissance"_fr, [pad, pourcent] { return pourcent (pad().decroissance); }, [pad] { return pad().decroissance; },
+                      [this] (int pas, bool fin) { modifierPad (1, [=] (PadBatterie& p) { p.decroissance = juce::jlimit (0.0f, 1.0f, p.decroissance + (float) pas * (fin ? 0.001f : 0.005f)); }); }, actif };
+    pageDevice[2] = { "Saturation", [pad, pourcent] { return pourcent (pad().saturation); }, [pad] { return pad().saturation; },
+                      [this] (int pas, bool fin) { modifierPad (2, [=] (PadBatterie& p) { p.saturation = juce::jlimit (0.0f, 1.0f, p.saturation + (float) pas * (fin ? 0.001f : 0.005f)); }); }, actif };
+    pageDevice[3] = { "Couleur",
+                      [pad] { const auto c = pad().couleur; return std::abs (c) < 0.005f ? juce::String ("Neutre") : (c < 0 ? "Sombre " : "Brillant ") + juce::String (juce::roundToInt (std::abs (c) * 100.0f)); },
+                      [pad] { return (pad().couleur + 1.0f) / 2.0f; },
+                      [this] (int pas, bool fin) { modifierPad (3, [=] (PadBatterie& p) { p.couleur = juce::jlimit (-1.0f, 1.0f, p.couleur + (float) pas * (fin ? 0.002f : 0.01f)); }); }, actif };
+    pageDevice[4] = { "Volume", [pad] { return formaterDb (pad().volumeDb); }, [pad] { return (pad().volumeDb + 40.0f) / 46.0f; },
+                      [this] (int pas, bool fin) { modifierPad (4, [=] (PadBatterie& p) { p.volumeDb = juce::jlimit (-40.0f, 6.0f, p.volumeDb + (float) pas * (fin ? 0.05f : 0.25f)); }); }, actif };
+    pageDevice[5] = { "Étouffement"_fr, [pad] { return pad().etouffement == 0 ? juce::String ("Aucun") : "Groupe " + juce::String (pad().etouffement); },
+                      [pad] { return (float) pad().etouffement / 4.0f; },
+                      [this] (int pas, bool) { if (auto c = crantsDiscrets (5, pas)) modifierPad (5, [=] (PadBatterie& p) { p.etouffement = juce::jlimit (0, 4, p.etouffement + c); }); }, actif };
+    pageDevice[6] = { "Compression", [kit, pourcent] { return pourcent (kit().compression); }, [kit] { return kit().compression; },
+                      [this] (int pas, bool fin) { if (pisteChoisieEstUneBatterie()) moteur.modifier ([=, p = pisteChoisie] (Morceau& m) { auto& k = m.pistes[(size_t) p].kit; k.compression = juce::jlimit (0.0f, 1.0f, k.compression + (float) pas * (fin ? 0.001f : 0.005f)); }, "encodeur 6"); },
+                      premier };
+    pageDevice[7] = { "Largeur", [kit, pourcent] { return pourcent (kit().largeur); }, [kit] { return kit().largeur; },
+                      [this] (int pas, bool fin) { if (pisteChoisieEstUneBatterie()) moteur.modifier ([=, p = pisteChoisie] (Morceau& m) { auto& k = m.pistes[(size_t) p].kit; k.largeur = juce::jlimit (0.0f, 1.0f, k.largeur + (float) pas * (fin ? 0.001f : 0.005f)); }, "encodeur 7"); },
+                      premier };
+
+    // Page Browse : catégorie, puis son (ou kit entier) pour le pad choisi, avec préécoute
+    pageBrowse[0] = { "Catégorie"_fr, [this] { return categoriesDuNavigateur[categorieChoisie]; }, [this] { return categoriesDuNavigateur.isEmpty() ? 0.0f : (float) categorieChoisie / (float) juce::jmax (1, categoriesDuNavigateur.size() - 1); },
+                      [this] (int pas, bool) { if (auto c = crantsDiscrets (0, pas)) { categorieChoisie = juce::jlimit (0, juce::jmax (0, categoriesDuNavigateur.size() - 1), categorieChoisie + c); sonChoisi = 0; } }, premier };
+    pageBrowse[1] = { "Son", [this] { const auto s = sonsDeLaCategorie(); return s.isEmpty() ? juce::String ("Dossier vide") : juce::File (s[sonChoisi]).getFileNameWithoutExtension(); },
+                      [this] { const auto s = sonsDeLaCategorie(); return s.size() < 2 ? 0.0f : (float) sonChoisi / (float) (s.size() - 1); },
+                      [this] (int pas, bool) { if (auto c = crantsDiscrets (1, pas)) { sonChoisi = juce::jlimit (0, juce::jmax (0, sonsDeLaCategorie().size() - 1), sonChoisi + c); choisirDansLeNavigateur(); } }, actif };
+
     surface.surEvenement = [this] (const Evenement& e) { traiter (e); };
     rafraichir();
     startTimerHz (60);
@@ -103,14 +138,157 @@ int Pilote::crantsDiscrets (int encodeur, int pas)
     return changement;
 }
 
+bool Pilote::pisteChoisieEstUneBatterie() const
+{
+    return moteur.getMorceau().pistes[(size_t) pisteChoisie].estUneBatterie();
+}
+
+void Pilote::modifierPad (int encodeur, std::function<void (PadBatterie&)> f)
+{
+    if (! pisteChoisieEstUneBatterie())
+        return;
+
+    moteur.modifier ([=, p = pisteChoisie, k = padChoisi] (Morceau& m) { f (m.pistes[(size_t) p].kit.pads[(size_t) k]); },
+                     "encodeur " + juce::String (encodeur));
+}
+
+juce::StringArray Pilote::sonsDeLaCategorie() const
+{
+    const auto categorie = categoriesDuNavigateur[categorieChoisie];
+
+    if (categorie == "Kits")
+        return kitsDeDepart::noms();
+
+    return moteur.getBanque().sons (categorie);
+}
+
+void Pilote::choisirDansLeNavigateur()
+{
+    if (! pisteChoisieEstUneBatterie())
+        return;
+
+    const auto sons = sonsDeLaCategorie();
+
+    if (sons.isEmpty())
+        return;
+
+    const auto choix = sons[sonChoisi];
+
+    if (categoriesDuNavigateur[categorieChoisie] == "Kits")
+        moteur.modifier ([=, p = pisteChoisie] (Morceau& m) { m.pistes[(size_t) p].kit = kitsDeDepart::kit (choix); }, "navigateur");
+    else
+        moteur.modifier ([=, p = pisteChoisie, k = padChoisi] (Morceau& m) { m.pistes[(size_t) p].kit.pads[(size_t) k].son = choix; }, "navigateur");
+
+    // Préécoute : le pad choisi, tout de suite
+    moteur.jouerNote (pisteChoisie, Kit::premiereNote + padChoisi, 110);
+}
+
+double Pilote::longueurDUnPas() const
+{
+    const auto& mesure = moteur.getMorceau().mesure;
+    return (double) mesure.denominateur / (double) mesure.grilleParDefaut();
+}
+
+int Pilote::nombreDePas() const
+{
+    const auto c = caseDuPasAPas();
+    const auto* clip = c ? moteur.getMorceau().clip (c->first, c->second) : nullptr;
+    const auto longueur = clip != nullptr ? clip->longueurMesures : 1;
+    return juce::roundToInt (longueur * moteur.getMorceau().mesure.numerateur / longueurDUnPas());
+}
+
+std::optional<std::pair<int, int>> Pilote::caseDuPasAPas() const
+{
+    const auto& m = moteur.getMorceau();
+
+    if (const int s = moteur.sceneJouee (pisteChoisie); s >= 0)
+        return std::pair { pisteChoisie, s };
+
+    if (caseChoisie && caseChoisie->first == pisteChoisie && m.clip (pisteChoisie, caseChoisie->second) != nullptr)
+        return caseChoisie;
+
+    for (int s = 0; s < (int) m.scenes.size(); ++s)
+        if (m.clip (pisteChoisie, s) != nullptr)
+            return std::pair { pisteChoisie, s };
+
+    return std::nullopt;
+}
+
+void Pilote::basculerPas (int pas)
+{
+    auto cible = caseDuPasAPas();
+
+    // Pas de clip sur la piste : on en crée un d'une mesure, dans la case choisie (ou la première scène)
+    if (! cible)
+    {
+        const int scene = caseChoisie && caseChoisie->first == pisteChoisie ? caseChoisie->second : 0;
+        moteur.modifier ([=, p = pisteChoisie] (Morceau& m) { m.assurerScenes (scene + 1); m.scenes[(size_t) scene].clips[(size_t) p] = Clip { "Rythme", 1, {} }; });
+        cible = std::pair { pisteChoisie, scene };
+        caseChoisie = cible;
+    }
+
+    if (pas >= nombreDePas())
+        return;
+
+    const auto [piste, scene] = *cible;
+    const auto longueur = longueurDUnPas();
+    const auto debut = pas * longueur;
+    const int note = Kit::premiereNote + padChoisi;
+    const int velocite = tenu (Bouton::accent) ? 127 : 100;
+
+    moteur.modifier ([=] (Morceau& m)
+    {
+        auto& notes = m.scenes[(size_t) scene].clips[(size_t) piste]->notes;
+        auto dansLePas = [&] (const Note& n) { return n.hauteur == note && n.debut > debut - 1.0e-6 && n.debut < debut + longueur - 1.0e-6; };
+        const auto avant = notes.size();
+        notes.erase (std::remove_if (notes.begin(), notes.end(), dansLePas), notes.end());
+
+        if (notes.size() == avant)
+            notes.push_back ({ debut, longueur * 0.9, note, velocite });
+    });
+}
+
+void Pilote::appuyerPadDeNote (int ligne, int colonne, int velocite)
+{
+    // En bas à gauche : les 16 pads de la batterie ; en haut : 32 pas du pas à pas
+    if (ligne < 4 && colonne < 4)
+    {
+        const int pad = ligne * 4 + colonne;
+        const bool nouveau = pad != padChoisi;
+        padChoisi = pad;
+        padsAppuyes[(size_t) pad] = true;
+        moteur.jouerNote (pisteChoisie, Kit::premiereNote + pad, tenu (Bouton::accent) ? 127 : velocite);
+
+        if (nouveau)
+            annoncer (kitsDeDepart::nomsDesPads()[(size_t) pad], juce::File (moteur.getMorceau().pistes[(size_t) pisteChoisie].kit.pads[(size_t) pad].son).getFileNameWithoutExtension());
+
+        return;
+    }
+
+    if (ligne >= 4)
+        basculerPas (pageDePas * 32 + (7 - ligne) * 8 + colonne);
+}
+
 //==============================================================================
 void Pilote::traiter (const Evenement& e)
 {
     switch (e.type)
     {
         case Evenement::Type::pad:
-            if (e.appuye)
-                appuyerPad (e.ligne(), e.colonne());
+            if (mode == Mode::note)
+            {
+                if (e.appuye)
+                    appuyerPadDeNote (e.ligne(), e.colonne(), e.valeur);
+                else if (e.ligne() < 4 && e.colonne() < 4)
+                {
+                    padsAppuyes[(size_t) (e.ligne() * 4 + e.colonne())] = false;
+                    moteur.relacherNote (pisteChoisie, Kit::premiereNote + e.ligne() * 4 + e.colonne());
+                }
+            }
+            else if (e.appuye)
+            {
+                appuyerPad (e.ligne(), e.colonne(), e.valeur);
+            }
             break;
 
         case Evenement::Type::bouton:
@@ -186,7 +364,7 @@ void Pilote::tournerEncodeur (int encodeur, int pas)
 }
 
 //==============================================================================
-void Pilote::appuyerPad (int ligne, int colonne)
+void Pilote::appuyerPad (int ligne, int colonne, int)
 {
     const int scene = sceneDeLaLigne (ligne);
     const int piste = colonne;
@@ -325,6 +503,11 @@ void Pilote::appuyerPiste (int piste)
     {
         annoncer ("Piste "_fr + juce::String (piste + 1), p.nom);
     }
+
+    if (mode == Mode::note && ! p.estUneBatterie())
+        mode = Mode::session;
+
+    pageDePas = 0;
 }
 
 void Pilote::appuyer (int bouton)
@@ -399,6 +582,9 @@ void Pilote::appuyer (int bouton)
         }
 
         case Bouton::doubleLoop:
+            if (mode == Mode::note && caseDuPasAPas())
+                caseChoisie = caseDuPasAPas();
+
             if (caseChoisie)
             {
                 const auto [p, s] = *caseChoisie;
@@ -431,6 +617,58 @@ void Pilote::appuyer (int bouton)
             moteur.modifier ([] (Morceau& m) { m.assurerScenes ((int) m.scenes.size() + 1); });
             annoncer ("New", "Scène "_fr + juce::String ((int) moteur.getMorceau().scenes.size()) + " ajoutée"_fr);
             return;
+
+        case Bouton::note:
+            if (pisteChoisieEstUneBatterie())
+            {
+                mode = Mode::note;
+                page = Page::device;
+                annoncer ("Note", "Batterie : pads en bas à gauche, pas à pas en haut"_fr);
+            }
+            else
+            {
+                annoncer ("Note", "Les pads en gamme des synthés arrivent à l'étape 6"_fr);
+            }
+            return;
+
+        case Bouton::session:
+            mode = Mode::session;
+            annoncer ("Session", "Pistes et scènes"_fr);
+            return;
+
+        case Bouton::device:
+            page = Page::device;
+            annoncer ("Device", pisteChoisieEstUneBatterie() ? kitsDeDepart::nomsDesPads()[(size_t) padChoisi] + " et kit " + morceau.pistes[(size_t) pisteChoisie].kit.nom
+                                                              : juce::String ("Réglages des synthés à l'étape 6"_fr));
+            return;
+
+        case Bouton::browse:
+            if (page == Page::browse)
+            {
+                page = Page::device;
+                annoncer ("Browse", "Fermé"_fr);
+                return;
+            }
+
+            categoriesDuNavigateur = moteur.getBanque().categories();
+            categoriesDuNavigateur.insert (0, "Kits");
+            categorieChoisie = juce::jlimit (0, categoriesDuNavigateur.size() - 1, categorieChoisie);
+            page = Page::browse;
+            annoncer ("Browse", pisteChoisieEstUneBatterie() ? "Encodeur 1 : catégorie ; encodeur 2 : son"_fr : juce::String ("Choisis d'abord une piste batterie"));
+            return;
+
+        case Bouton::pageGauche:
+        case Bouton::pageDroite:
+            if (mode == Mode::note)
+            {
+                const int pages = juce::jmax (1, (nombreDePas() + 31) / 32);
+                pageDePas = juce::jlimit (0, pages - 1, pageDePas + ((Bouton) bouton == Bouton::pageDroite ? 1 : -1));
+                annoncer ("Pas à pas"_fr, "Page " + juce::String (pageDePas + 1) + " sur " + juce::String (pages));
+            }
+            return;
+
+        case Bouton::accent:
+            return;     // se tient, avec un pad ou un pas
 
         case Bouton::mix:
             page = Page::mix;
@@ -482,6 +720,46 @@ EtatSurface Pilote::calculerEtat() const
     const bool clignote = std::fmod (p.fraction * 2.0, 1.0) < 0.5;
     const bool pulse = p.fraction < 0.5;
 
+    if (mode == Mode::note)
+    {
+        // Pads de la batterie (en bas à gauche) et pas à pas (en haut)
+        const auto& kit = morceau.pistes[(size_t) pisteChoisie].kit;
+
+        for (int pad = 0; pad < 16; ++pad)
+            etat.pads[(size_t) ((pad / 4) * 8 + pad % 4)] = kit.pads[(size_t) pad].son.isEmpty() ? palette::noir
+                                                           : palette::indexDePiste (pisteChoisie, padsAppuyes[(size_t) pad] ? 3 : pad == padChoisi ? 2 : 1);
+
+        const auto cible = caseDuPasAPas();
+        const auto* clip = cible ? morceau.clip (cible->first, cible->second) : nullptr;
+        const auto longueur = longueurDUnPas();
+        const int total = nombreDePas();
+        const auto position = moteur.positionDansLeClip (pisteChoisie);
+        const int pasEnCours = position ? (int) (*position / longueur) : -1;
+        const int note = Kit::premiereNote + padChoisi;
+
+        for (int i = 0; i < 32; ++i)
+        {
+            const int pas = pageDePas * 32 + i;
+            const int ligne = 7 - i / 8, colonne = i % 8;
+            int index = palette::noir;
+
+            if (pas < total)
+            {
+                index = palette::indexDePiste (pisteChoisie, 0);
+
+                if (clip != nullptr)
+                    for (auto& n : clip->notes)
+                        if (n.hauteur == note && n.debut > pas * longueur - 1.0e-6 && n.debut < (pas + 1) * longueur - 1.0e-6)
+                            index = palette::indexDePiste (pisteChoisie, n.velocite >= 120 ? 3 : 2);
+
+                if (pas == pasEnCours)
+                    index = palette::blanc;
+            }
+
+            etat.pads[(size_t) (ligne * 8 + colonne)] = index;
+        }
+    }
+    else
     // Pads : la Session
     for (int ligne = 0; ligne < 8; ++ligne)
         for (int colonne = 0; colonne < 8; ++colonne)
@@ -545,6 +823,26 @@ EtatSurface Pilote::calculerEtat() const
     blanc (Bouton::nouveau, false);
     blanc (Bouton::mix, page == Page::mix);
     blanc (Bouton::setup, page == Page::clic);
+    blanc (Bouton::session, mode == Mode::session);
+    blanc (Bouton::note, mode == Mode::note);
+    blanc (Bouton::accent, tenu (Bouton::accent));
+
+    if (morceau.pistes[(size_t) pisteChoisie].estUneBatterie())
+    {
+        blanc (Bouton::device, page == Page::device);
+        blanc (Bouton::browse, page == Page::browse);
+    }
+
+    if (mode == Mode::note)
+    {
+        const int pages = (nombreDePas() + 31) / 32;
+
+        if (pageDePas > 0)
+            blanc (Bouton::pageGauche, false);
+
+        if (pageDePas + 1 < pages)
+            blanc (Bouton::pageDroite, false);
+    }
 
     if (caseChoisie && morceau.clip (caseChoisie->first, caseChoisie->second) != nullptr)
         blanc (Bouton::doubleLoop, false);

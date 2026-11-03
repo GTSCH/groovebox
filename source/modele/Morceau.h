@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Mesure.h"
+#include "Kit.h"
 
 namespace groovebox
 {
@@ -56,7 +57,9 @@ struct Piste
     float volumeDb = 0.0f;
     float panoramique = 0.0f;       ///< -1 à gauche, 1 à droite
     bool mute = false, solo = false;
+    Kit kit;                        ///< Utilisé quand le son est Batterie ou Percussions
 
+    bool estUneBatterie() const     { return son == SonProvisoire::batterie || son == SonProvisoire::percussions; }
     bool operator== (const Piste&) const = default;
 };
 

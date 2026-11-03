@@ -3,6 +3,7 @@
 #include "BipPlugin.h"
 #include "ClicPlugin.h"
 #include "InstrumentProvisoire.h"
+#include "BatteriePlugin.h"
 #include "modele/Morceau.h"
 
 namespace groovebox
@@ -41,7 +42,8 @@ public:
     /** Mesures d'avance au début de la ligne du temps, où se joue le décompte. La mesure 1 commence après. */
     static constexpr int mesuresDePreparation = 2;
 
-    Moteur (te::Engine&, Morceau morceauDeDepart = {});
+    /** Sans banque de sons fournie, le moteur prend le dossier Sons habituel et y fabrique les kits de départ manquants. */
+    Moteur (te::Engine&, Morceau morceauDeDepart = {}, BanqueDeSons* banque = nullptr);
     ~Moteur() override;
 
     //==============================================================================
@@ -79,6 +81,15 @@ public:
     /** Temps du moteur (depuis le début de la ligne du temps) où démarre la mesure 1. */
     double tempsDeLaMesure1() const;
 
+    /** Joue une note en direct sur la piste (pads du Push en mode Note), sans passer par un clip. */
+    void jouerNote (int piste, int note, int velocite);
+    void relacherNote (int piste, int note);
+
+    /** Position, en temps du moteur, dans le clip qui joue sur la piste (pour la lumière du pas à pas). */
+    std::optional<double> positionDansLeClip (int piste) const;
+
+    BanqueDeSons& getBanque()                   { return *banque; }
+
     /** Instrument d'une voix (0 : A, 1 : B), pour les essais. */
     te::AudioTrack* voix (int piste, int laquelle) const   { return pistesMoteur[(size_t) piste].voix[(size_t) laquelle]; }
 
@@ -110,6 +121,8 @@ public:
 
 private:
     te::Engine& engine;
+    std::unique_ptr<BanqueDeSons> banquePropre;
+    BanqueDeSons* banque = nullptr;
     Morceau morceau;
     std::unique_ptr<te::Edit> edit;
     te::AudioTrack* pistePrincipale = nullptr;
@@ -127,6 +140,7 @@ private:
         te::FolderTrack* dossier = nullptr;
         std::array<te::AudioTrack*, 2> voix {};
         std::array<InstrumentProvisoire*, 2> instruments {};
+        std::array<BatteriePlugin*, 2> batteries {};
         te::AuxSendPlugin* envoiCasque = nullptr;
         te::VolumeAndPanPlugin* volume = nullptr;
     };

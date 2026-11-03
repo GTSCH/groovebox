@@ -24,9 +24,13 @@ set (SOURCES_MOTEUR
     source/modele/Morceau.cpp
     source/modele/Demo.cpp
     source/modele/Bibliotheque.cpp
+    source/modele/Kit.cpp
     source/moteur/BipPlugin.cpp
     source/moteur/ClicPlugin.cpp
     source/moteur/InstrumentProvisoire.cpp
+    source/moteur/BanqueDeSons.cpp
+    source/moteur/BatteriePlugin.cpp
+    source/moteur/FabriqueDeSons.cpp
     source/moteur/Moteur.cpp
     source/moteur/Reglages.cpp
     source/push/Controles.cpp

@@ -1,4 +1,5 @@
 #include "Moteur.h"
+#include "FabriqueDeSons.h"
 
 namespace groovebox
 {
@@ -44,11 +45,21 @@ namespace
     }
 }
 
-Moteur::Moteur (te::Engine& e, Morceau depart)  : engine (e), morceau (std::move (depart))
+Moteur::Moteur (te::Engine& e, Morceau depart, BanqueDeSons* banqueFournie)  : engine (e), banque (banqueFournie), morceau (std::move (depart))
 {
+    if (banque == nullptr)
+    {
+        banquePropre = std::make_unique<BanqueDeSons>();
+        banque = banquePropre.get();
+
+        if (const int n = fabriqueDeSons::assurerKitsDeDepart (banque->getRacine()); n > 0)
+            juce::Logger::writeToLog ("Kits de départ fabriqués : "_fr + juce::String (n) + " sons dans " + banque->getRacine().getFullPathName());
+    }
+
     engine.getPluginManager().createBuiltInType<BipPlugin>();
     engine.getPluginManager().createBuiltInType<ClicPlugin>();
     engine.getPluginManager().createBuiltInType<InstrumentProvisoire>();
+    engine.getPluginManager().createBuiltInType<BatteriePlugin>();
     contraindre (morceau);
 
     edit = te::Edit::createSingleTrackEdit (engine);
@@ -91,6 +102,7 @@ Moteur::Moteur (te::Engine& e, Morceau depart)  : engine (e), morceau (std::move
             v->setName ("Piste " + juce::String (i + 1) + (k == 0 ? ", voix A" : ", voix B"));
             v->playSlotClips = true;
             pm.instruments[(size_t) k] = ajouterPlugin<InstrumentProvisoire> (*v, 0);
+            pm.batteries[(size_t) k] = ajouterPlugin<BatteriePlugin> (*v, 1);
         }
 
         pm.volume = pm.dossier->getVolumePlugin();
@@ -267,8 +279,18 @@ void Moteur::appliquerPistes (const Morceau& ancien, bool tout)
 
         pm.dossier->setName (p.nom);
 
-        for (auto* instrument : pm.instruments)
-            instrument->son = (int) p.son;
+        // Batterie ou synthé provisoire : un seul des deux est actif ; les notes traversent celui qui est éteint
+        const bool batterie = p.estUneBatterie();
+
+        for (int k = 0; k < 2; ++k)
+        {
+            pm.instruments[(size_t) k]->son = (int) p.son;
+            pm.instruments[(size_t) k]->setEnabled (! batterie);
+            pm.batteries[(size_t) k]->setEnabled (batterie);
+
+            if (batterie && (tout || ! (p.kit == a.kit) || p.son != a.son))
+                pm.batteries[(size_t) k]->appliquerKit (p.kit, *banque);
+        }
 
         pm.volume->setVolumeDb (p.volumeDb);
         pm.volume->setPan (p.panoramique);
@@ -359,6 +381,41 @@ void Moteur::appliquerCase (int piste, int scene)
                            n.velocite, 0, nullptr);
 
     existant->setLoopRangeBeats ({ te::BeatPosition(), te::BeatDuration::fromBeats (longueur) });
+}
+
+//==============================================================================
+void Moteur::jouerNote (int piste, int note, int velocite)
+{
+    if (auto v = pistesMoteur[(size_t) juce::jlimit (0, nombreDePistes - 1, piste)].voix[0])
+        v->injectLiveMidiMessage (juce::MidiMessage::noteOn (1, note, (juce::uint8) juce::jlimit (1, 127, velocite)), {});
+}
+
+void Moteur::relacherNote (int piste, int note)
+{
+    if (auto v = pistesMoteur[(size_t) juce::jlimit (0, nombreDePistes - 1, piste)].voix[0])
+        v->injectLiveMidiMessage (juce::MidiMessage::noteOff (1, note), {});
+}
+
+std::optional<double> Moteur::positionDansLeClip (int piste) const
+{
+    const int scene = sceneJouee (piste);
+
+    if (scene < 0)
+        return std::nullopt;
+
+    auto* c = clipDeLaCase (piste, scene);
+    const auto* modele = morceau.clip (piste, scene);
+
+    if (c == nullptr || modele == nullptr)
+        return std::nullopt;
+
+    const auto joue = c->getLaunchHandle()->getPlayedRange();
+
+    if (! joue)
+        return std::nullopt;
+
+    const auto longueur = (double) modele->longueurMesures * morceau.mesure.numerateur;
+    return std::fmod (joue->getLength().inBeats(), longueur);
 }
 
 //==============================================================================

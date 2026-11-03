@@ -7,6 +7,7 @@
 #include "modele/TapTempo.h"
 #include "modele/Demo.h"
 #include "modele/Bibliotheque.h"
+#include "moteur/FabriqueDeSons.h"
 #include "push/Pilote.h"
 #include "push/EcranPush.h"
 #include "push/PushMidi.h"
@@ -72,6 +73,22 @@ namespace
         int nombreDeSorties;
         te::HostedAudioDeviceInterface& io { engine.getDeviceManager().getHostedAudioDeviceInterface() };
     };
+
+    /** Banque de sons des essais : les kits de départ, fabriqués une fois dans un dossier temporaire. */
+    BanqueDeSons& banqueEssai()
+    {
+        static auto dossier = []
+        {
+            auto d = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("groovebox-essais-sons");
+            d.deleteRecursively();
+            d.createDirectory();
+            fabriqueDeSons::assurerKitsDeDepart (d);
+            return d;
+        }();
+
+        static BanqueDeSons banque (dossier);
+        return banque;
+    }
 
     /** Laisse le fil principal traiter ce qui attend (reconstruction du graphe après un changement). */
     void laisserTravailler (int millisecondes = 100)
@@ -350,7 +367,7 @@ public:
         beginTest ("Le son de test sort sur les sorties 1-2, et aussi dans le casque (3-4)");
         {
             CarteSimulee carte (engine, 4);
-            Moteur moteur (engine);
+            Moteur moteur (engine, {}, &banqueEssai());
             expect (moteur.sortieCasqueDisponible(), "les sorties 3-4 devraient être vues"_fr);
 
             moteur.activerBip (Sortie::principale, true);
@@ -368,7 +385,7 @@ public:
             CarteSimulee carte (engine, 4);
             auto morceau = morceauAvec (120.0, Mesure::standard (4, 4));
             morceau.clic.ecouteSurMac = true;   // doit être ignoré : la carte a des sorties 3-4
-            Moteur moteur (engine, morceau);
+            Moteur moteur (engine, morceau, &banqueEssai());
             expect (! moteur.getMorceau().clic.ecouteSurMac);
 
             moteur.activerBip (Sortie::casque, true);
@@ -385,7 +402,7 @@ public:
         beginTest ("Sans sorties 3-4, le clic et le test casque restent muets");
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)));
+            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)), &banqueEssai());
             expect (! moteur.sortieCasqueDisponible());
 
             moteur.activerBip (Sortie::casque, true);
@@ -400,7 +417,7 @@ public:
         beginTest ("Écoute sur le Mac : le clic sur 1-2, sans doubler la musique"_fr);
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)));
+            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)), &banqueEssai());
             moteur.activerBip (Sortie::principale, true);
             auto sansEcoute = carte.jouer (uneSeconde);
 
@@ -423,7 +440,7 @@ public:
         beginTest ("Le son de test marche aussi à l'arrêt"_fr);
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine);
+            Moteur moteur (engine, {}, &banqueEssai());
             expect (! moteur.enLecture());
             moteur.activerBip (Sortie::principale, true);
             auto audio = carte.jouer (uneSeconde);
@@ -480,7 +497,7 @@ public:
         {
             beginTest ("Accents justes en " + mesure.nom() + " " + mesure.nomGroupement() + " à "_fr + juce::String (tempo) + " BPM");
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine, morceauAvec (tempo, mesure));
+            Moteur moteur (engine, morceauAvec (tempo, mesure), &banqueEssai());
             lancerSurDeuxSorties (moteur, carte);
 
             const double tempsParSeconde = tempo / 60.0 * mesure.denominateur / 4.0;
@@ -495,7 +512,7 @@ public:
         {
             beginTest ("Aucune dérive sur 10 minutes en "_fr + mesure.nom() + " à "_fr + juce::String (tempo) + " BPM");
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine, morceauAvec (tempo, mesure));
+            Moteur moteur (engine, morceauAvec (tempo, mesure), &banqueEssai());
             lancerSurDeuxSorties (moteur, carte);
 
             DetecteurDeCoups detecteur;
@@ -545,7 +562,7 @@ public:
             CarteSimulee carte (engine, 2);
             auto morceau = morceauAvec (100.0, Mesure::standard (6, 8));
             morceau.clic.unClicParGroupe = true;
-            Moteur moteur (engine, morceau);
+            Moteur moteur (engine, morceau, &banqueEssai());
             lancerSurDeuxSorties (moteur, carte);
             DetecteurDeCoups detecteur;
             detecteur.analyser (carte.jouer (uneSeconde * 3), 0);
@@ -563,7 +580,7 @@ public:
         beginTest ("Décompte de 2 mesures, puis mesure 1"_fr);
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4), 2));
+            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4), 2), &banqueEssai());
             lancerSurDeuxSorties (moteur, carte);
 
             DetecteurDeCoups detecteur;
@@ -580,7 +597,7 @@ public:
         beginTest ("Changer le tempo en pleine lecture ne fait pas sauter la mesure");
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)));
+            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)), &banqueEssai());
             lancerSurDeuxSorties (moteur, carte);
 
             DetecteurDeCoups detecteur;
@@ -615,7 +632,7 @@ public:
         beginTest ("Couper puis rallumer le clic : pas d'arrêt, pas de saut"_fr);
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)));
+            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)), &banqueEssai());
             lancerSurDeuxSorties (moteur, carte);
             carte.jouer (uneSeconde / 3);
 
@@ -633,7 +650,7 @@ public:
         beginTest ("Arrêter puis relancer repart à la mesure 1, au tempo choisi"_fr);
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)));
+            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)), &banqueEssai());
             lancerSurDeuxSorties (moteur, carte);
             carte.jouer (uneSeconde);
             moteur.modifier ([] (Morceau& m) { m.tempo = 150.0; });
@@ -653,7 +670,7 @@ public:
         beginTest ("La mesure ne change pas pendant la lecture");
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)));
+            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)), &banqueEssai());
             demarrer (moteur, carte);
             moteur.modifier ([] (Morceau& m) { m.mesure = Mesure::standard (7, 8); });
             expect (moteur.getMorceau().mesure == Mesure::standard (4, 4));
@@ -793,7 +810,7 @@ public:
         beginTest ("Dessiner et convertir l'écran prend moins de 5 ms");
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine);
+            Moteur moteur (engine, {}, &banqueEssai());
             Surface surface;
             Pilote pilote (moteur, surface);
             juce::Image image (juce::Image::RGB, 960, 160, true);
@@ -815,7 +832,7 @@ public:
         beginTest ("Les contrôles du Push règlent le morceau");
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)));
+            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)), &banqueEssai());
             Surface surface;
             Pilote pilote (moteur, surface);
             auto bouton = [&] (Bouton b) { surface.recevoir ({ T::bouton, (int) b, 1, true }); surface.recevoir ({ T::bouton, (int) b, 0, false }); };
@@ -863,7 +880,7 @@ public:
         beginTest ("Session au Push : pads, scènes, effacer, dupliquer, annuler"_fr);
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine, morceauDeDemonstration());
+            Moteur moteur (engine, morceauDeDemonstration(), &banqueEssai());
             Surface surface;
             Pilote pilote (moteur, surface);
             auto appui = [&] (Bouton b) { surface.recevoir ({ T::bouton, (int) b, 1, true }); };
@@ -926,10 +943,117 @@ public:
             expectEquals (pilote.sceneDeLaLigne (7), 1);
         }
 
+        beginTest ("Mode Note au Push : pads de batterie, pas à pas, Device, Browse"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+            m.clic.actif = false;
+            m.pistes[0].kit = kitsDeDepart::kit ("Analogique");
+            Moteur moteur (engine, m, &banqueEssai());
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            auto appui = [&] (Bouton b) { surface.recevoir ({ T::bouton, (int) b, 1, true }); };
+            auto relache = [&] (Bouton b) { surface.recevoir ({ T::bouton, (int) b, 0, false }); };
+            auto bouton = [&] (Bouton b) { appui (b); relache (b); };
+            auto padDeNote = [&] (int ligne, int colonne, int v = 100) { surface.recevoir (Evenement::pad (ligne, colonne, v)); surface.recevoir (Evenement::pad (ligne, colonne, 0)); };
+            auto pas = [&] (int n) { padDeNote (7 - n / 8, n % 8); };
+
+            // Piste 2 (basse) : pas de mode Note avant l'étape 6
+            surface.recevoir ({ T::bouton, premierBoutonDuBas + 1, 1, true });
+            surface.recevoir ({ T::bouton, premierBoutonDuBas + 1, 0, false });
+            bouton (Bouton::note);
+            expect (pilote.getMode() == Pilote::Mode::session, "pas de mode Note sur la basse pour l'instant"_fr);
+
+            surface.recevoir ({ T::bouton, premierBoutonDuBas, 1, true });
+            surface.recevoir ({ T::bouton, premierBoutonDuBas, 0, false });
+            bouton (Bouton::note);
+            expect (pilote.getMode() == Pilote::Mode::note && pilote.getPage() == Pilote::Page::device);
+
+            // Un pad de batterie sonne et devient la voix choisie (pad 6 : charleston fermé, 2e ligne, 3e colonne)
+            carte.jouer (256);
+            surface.recevoir (Evenement::pad (1, 2, 120));
+            expectEquals (pilote.getPadChoisi(), 6);
+            expect (crete (carte.jouer (4800), 0) > 0.05f, "le pad sonne"_fr);
+            surface.recevoir (Evenement::pad (1, 2, 0));
+
+            // Pas à pas : pas 0 et pas 4 (2e temps), puis Accent sur le pas 10 ; un clip d'une mesure est créé
+            pas (0);
+            pas (4);
+            appui (Bouton::accent);
+            pas (10);
+            relache (Bouton::accent);
+            const auto* clip = moteur.getMorceau().clip (0, 0);
+            expect (clip != nullptr, "clip créé pour le pas à pas"_fr);
+
+            if (clip != nullptr)
+            {
+                expectEquals ((int) clip->notes.size(), 3);
+                expectEquals (pilote.nombreDePas(), 16);
+                expectEquals (clip->notes[1].debut, 1.0, "pas 4 = 2e temps"_fr);
+                expectEquals (clip->notes[1].hauteur, 42);
+                expectEquals (clip->notes[2].velocite, 127, "Accent : vélocité maximale"_fr);
+            }
+
+            expectEquals (pilote.calculerEtat().pads[(size_t) (7 * 8 + 4)], palette::indexDePiste (0, 2), "pas allumé"_fr);
+            expectEquals (pilote.calculerEtat().pads[(size_t) (6 * 8 + 0)], palette::indexDePiste (0, 0), "pas vide de la mesure : couleur faible"_fr);
+            expectEquals (pilote.calculerEtat().pads[(size_t) (5 * 8 + 0)], palette::noir, "au-delà des 16 pas : éteint"_fr);
+
+            pas (4);
+            expectEquals ((int) moteur.getMorceau().clip (0, 0)->notes.size(), 2, "rappuyer efface le pas"_fr);
+
+            // Device : la hauteur du pad choisi
+            surface.recevoir ({ T::encodeurTourne, 0, 20, false });
+            expectWithinAbsoluteError (moteur.getMorceau().pistes[0].kit.pads[6].hauteur, 2.0f, 1.0e-4f);
+            surface.recevoir ({ T::encodeurTourne, 6, 40, false });
+            expectWithinAbsoluteError (moteur.getMorceau().pistes[0].kit.compression, kitsDeDepart::kit ("Analogique").compression + 0.2f, 1.0e-4f, "compression du kit"_fr);
+
+            // Browse : catégorie Charlestons, deuxième son ; puis un kit entier
+            bouton (Bouton::browse);
+            expect (pilote.getPage() == Pilote::Page::browse);
+            const auto categories = banqueEssai().categories();
+            const int indexCharlestons = categories.indexOf ("Charlestons") + 1;     // « Kits » vient en premier
+            for (int i = 0; i < indexCharlestons; ++i)
+                surface.recevoir ({ T::encodeurTourne, 0, 8, false });     // un cran tous les 8 pas
+
+            surface.recevoir ({ T::encodeurTourne, 1, 8, false });
+            expectEquals (moteur.getMorceau().pistes[0].kit.pads[6].son, banqueEssai().sons ("Charlestons")[1]);
+            for (int i = 0; i < 20; ++i)
+                surface.recevoir ({ T::encodeurTourne, 0, -8, false });
+
+            surface.recevoir ({ T::encodeurTourne, 1, 8, false });
+            surface.recevoir ({ T::encodeurTourne, 1, 8, false });
+            expectEquals (moteur.getMorceau().pistes[0].kit.nom, juce::String ("Dub"), "Kits : le troisième est Dub"_fr);
+            bouton (Bouton::undo);
+            expect (moteur.getMorceau().pistes[0].kit.nom != "Dub", "Undo rend le kit d'avant"_fr);
+
+            bouton (Bouton::session);
+            expect (pilote.getMode() == Pilote::Mode::session);
+        }
+
+        beginTest ("Pas à pas en 7/8 : croches, 7 pas par mesure, pages au-delà de 32 pas"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauAvec (120.0, Mesure::standard (7, 8));
+            m.assurerScenes (8);
+            m.scenes[0].clips[0] = Clip { "Long", 8, {} };
+            Moteur moteur (engine, m, &banqueEssai());
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            surface.recevoir ({ T::bouton, (int) Bouton::note, 1, true });
+            surface.recevoir ({ T::bouton, (int) Bouton::note, 0, false });
+            expectEquals (pilote.longueurDUnPas(), 1.0, "une croche par pas"_fr);
+            expectEquals (pilote.nombreDePas(), 56);
+            surface.recevoir ({ T::bouton, (int) Bouton::pageDroite, 1, true });
+            surface.recevoir ({ T::bouton, (int) Bouton::pageDroite, 0, false });
+            surface.recevoir (Evenement::pad (7, 0, 100));
+            expectEquals (moteur.getMorceau().clip (0, 0)->notes.front().debut, 32.0, "page 2 : premier pas = 33e croche"_fr);
+            expectEquals (pilote.calculerEtat().pads[(size_t) (4 * 8 + 0)], palette::noir, "page 2 : seulement 24 pas"_fr);
+        }
+
         beginTest ("Le Push et le simulateur reçoivent le même état");
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine, morceauDeDemonstration());
+            Moteur moteur (engine, morceauDeDemonstration(), &banqueEssai());
             Surface surface;
             ClientEssai push, simulateur;
             surface.ajouterClient (&push);
@@ -1029,7 +1153,7 @@ public:
             CarteSimulee carte (engine, 4);
             auto m = morceauDEssai();
             m.clic.decompte = 1;
-            Moteur moteur (engine, m);
+            Moteur moteur (engine, m, &banqueEssai());
 
             moteur.lancerScene (0);
             expect (moteur.etatCase (0, 0).departEnAttente, "la case attend son départ"_fr);
@@ -1061,7 +1185,7 @@ public:
         beginTest ("Un clip boucle sans dérive pendant une minute");
         {
             CarteSimulee carte (engine, 4);
-            Moteur moteur (engine, morceauDEssai());
+            Moteur moteur (engine, morceauDEssai(), &banqueEssai());
             moteur.lancerClip (0, 0);
             Ecoute ecoute;
 
@@ -1093,7 +1217,7 @@ public:
         {
             beginTest ("Lancement en pleine lecture, "_fr + nomDuCalage (calage).toLowerCase());
             CarteSimulee carte (engine, 4);
-            Moteur moteur (engine, morceauDEssai (calage));
+            Moteur moteur (engine, morceauDEssai (calage), &banqueEssai());
             demarrer (moteur, carte);
             Ecoute ecoute;
 
@@ -1137,7 +1261,7 @@ public:
         beginTest ("Arrêter une piste : elle se tait à la prochaine mesure");
         {
             CarteSimulee carte (engine, 4);
-            Moteur moteur (engine, morceauDEssai());
+            Moteur moteur (engine, morceauDEssai(), &banqueEssai());
             moteur.lancerClip (0, 0);
             Ecoute ecoute;
 
@@ -1165,7 +1289,7 @@ public:
             auto m = morceauDEssai();
             m.clic.actif = false;
             m.musiqueDansCasqueDb = 0.0f;
-            Moteur moteur (engine, m);
+            Moteur moteur (engine, m, &banqueEssai());
             moteur.lancerClip (0, 0);
 
             for (int i = 0; i < 10; ++i) { carte.jouer (uneSeconde / 10); moteur.avancer(); }
@@ -1182,7 +1306,7 @@ public:
         beginTest ("Mute et Solo");
         {
             CarteSimulee carte (engine, 4);
-            Moteur moteur (engine, morceauDEssai());
+            Moteur moteur (engine, morceauDEssai(), &banqueEssai());
             moteur.lancerClip (0, 0);
 
             for (int i = 0; i < 10; ++i) { carte.jouer (uneSeconde / 10); moteur.avancer(); }
@@ -1203,7 +1327,7 @@ public:
         beginTest ("La voix B de chaque piste a son instrument et reste muette");
         {
             CarteSimulee carte (engine, 4);
-            Moteur moteur (engine, morceauDeDemonstration());
+            Moteur moteur (engine, morceauDeDemonstration(), &banqueEssai());
             moteur.lancerScene (2);
 
             for (int i = 0; i < 30; ++i) { carte.jouer (uneSeconde / 10); moteur.avancer(); }
@@ -1224,7 +1348,7 @@ public:
         {
             CarteSimulee carte (engine, 2);
             const auto depart = morceauDeDemonstration();
-            Moteur moteur (engine, depart);
+            Moteur moteur (engine, depart, &banqueEssai());
 
             for (int i = 0; i < 12; ++i)
                 moteur.modifier ([] (Morceau& m) { m.tempo += 1.0; }, "tempo");
@@ -1285,7 +1409,7 @@ public:
         beginTest ("Sauvegarder pendant la lecture ne fait aucune coupure");
         {
             CarteSimulee carte (engine, 2);
-            Moteur moteur (engine, morceauDeDemonstration());
+            Moteur moteur (engine, morceauDeDemonstration(), &banqueEssai());
             auto racine = juce::File::createTempFile ("groovebox-morceaux");
             Bibliotheque bib (racine);
             moteur.lancerScene (2);
@@ -1326,11 +1450,204 @@ public:
     }
 };
 
+//==============================================================================
+class EssaisBatterie  : public juce::UnitTest
+{
+public:
+    EssaisBatterie()  : juce::UnitTest ("Batterie", "groovebox") {}
+
+    /** Un sinus de 440 Hz d'une seconde, pour mesurer la hauteur et la décroissance. */
+    static juce::File fichierSinus()
+    {
+        auto f = banqueEssai().getRacine().getChildFile ("Essais/Sinus 440.wav");
+
+        if (! f.existsAsFile())
+        {
+            f.getParentDirectory().createDirectory();
+            juce::AudioBuffer<float> b (1, 48000);
+
+            for (int i = 0; i < 48000; ++i)
+                b.setSample (0, i, 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * 440.0 * i / 48000.0));
+
+            juce::WavAudioFormat wav;
+            auto flux = f.createOutputStream();
+            std::unique_ptr<juce::AudioFormatWriter> e (wav.createWriterFor (flux.release(), 48000.0, 1, 24, {}, 0));
+            e->writeFromAudioSampleBuffer (b, 0, b.getNumSamples());
+        }
+
+        return f;
+    }
+
+    /** Morceau dont la piste 1 a un kit où le pad 0 joue le sinus. */
+    static Morceau morceauSinus (PadBatterie reglage = {})
+    {
+        auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+        m.clic.actif = false;
+        reglage.son = "Essais/Sinus 440.wav";
+        m.pistes[0].kit = kitsDeDepart::kit ("Analogique");
+        m.pistes[0].kit.pads[0] = reglage;
+        m.pistes[0].kit.largeur = 0.0f;
+        m.pistes[0].kit.compression = 0.0f;
+        return m;
+    }
+
+    static juce::AudioBuffer<float> frapper (te::Engine& engine, const Morceau& m, int note, int velocite, int duree = uneSeconde)
+    {
+        CarteSimulee carte (engine, 2);
+        Moteur moteur (engine, m, &banqueEssai());
+        carte.jouer (256);
+        moteur.jouerNote (0, note, velocite);
+        return carte.jouer (duree);
+    }
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+        fichierSinus();
+
+        beginTest ("Les kits de départ sont fabriqués : 4 kits de 16 sons lisibles"_fr);
+        {
+            int lus = 0;
+
+            for (auto& nom : kitsDeDepart::noms())
+                for (auto& pad : kitsDeDepart::kit (nom).pads)
+                {
+                    auto* e = banqueEssai().charger (pad.son);
+                    expect (e != nullptr, "son manquant : "_fr + pad.son);
+
+                    if (e != nullptr)
+                    {
+                        expect (e->audio.getNumSamples() > 4800 && e->audio.getMagnitude (0, 0, e->audio.getNumSamples()) > 0.5f, pad.son);
+                        expectEquals (e->frequence, 48000.0);
+                        ++lus;
+                    }
+                }
+
+            expectEquals (lus, 64);
+            expect (banqueEssai().categories().contains ("Grosses caisses"));
+            expect (banqueEssai().sons ("Charlestons").size() >= 8);
+        }
+
+        beginTest ("Un pad sonne quand on le frappe, plus fort si on frappe fort");
+        {
+            const auto fort = frapper (engine, morceauSinus(), 36, 127);
+            const auto doux = frapper (engine, morceauSinus(), 36, 40);
+            expect (niveauEfficace (fort, 0, 0, 24000) > 0.1f, "le pad sonne"_fr);
+            expect (niveauEfficace (doux, 0) < 0.4f * niveauEfficace (fort, 0), "frappe douce : moins fort"_fr);
+            expectWithinAbsoluteError (frequenceMesuree (fort, 0, 0, 24000) / 2.0, 440.0, 8.0, "hauteur d'origine");
+        }
+
+        beginTest ("Hauteur : +12 demi-tons double la fréquence"_fr);
+        {
+            PadBatterie p;
+            p.hauteur = 12.0f;
+            const auto audio = frapper (engine, morceauSinus (p), 36, 127);
+            expectWithinAbsoluteError (frequenceMesuree (audio, 0, 0, 12000) / 2.0, 880.0, 15.0);
+        }
+
+        beginTest ("Décroissance : le son raccourcit"_fr);
+        {
+            PadBatterie court;
+            court.decroissance = 0.2f;
+            const auto plein = frapper (engine, morceauSinus(), 36, 127);
+            const auto raccourci = frapper (engine, morceauSinus (court), 36, 127);
+            expect (niveauEfficace (plein, 0, 24000, 36000) > 0.1f, "son entier : encore là à 0,5 s"_fr);
+            expect (crete (raccourci, 0, 24000, 36000) < 0.001f, "son raccourci : éteint à 0,5 s"_fr);
+        }
+
+        beginTest ("Saturation et couleur changent le son sans le faire exploser");
+        {
+            PadBatterie sature, sombre;
+            sature.saturation = 1.0f;
+            sombre.couleur = -1.0f;
+            const auto a = frapper (engine, morceauSinus (sature), 36, 127);
+            const auto b = frapper (engine, morceauSinus (sombre), 36, 127);
+            expect (crete (a, 0) <= 1.5f && crete (a, 0) > 0.3f, "saturation contenue"_fr);
+            expect (niveauEfficace (b, 0, 0, 24000) < 0.5f * niveauEfficace (frapper (engine, morceauSinus(), 36, 127), 0, 0, 24000), "couleur sombre : le 440 Hz est atténué"_fr);
+        }
+
+        beginTest ("Étouffement : le charleston fermé coupe l'ouvert"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+            m.clic.actif = false;
+            m.pistes[0].kit = kitsDeDepart::kit ("Analogique");
+            m.pistes[0].kit.pads[42 - 36].son = "Essais/Sinus 440.wav";     // le « fermé » devient un sinus très long : facile à repérer
+            m.pistes[0].kit.pads[46 - 36].son = "Essais/Sinus 440.wav";
+            Moteur moteur (engine, m, &banqueEssai());
+            carte.jouer (256);
+            moteur.jouerNote (0, 46, 127);
+            carte.jouer (4800);
+            const auto avant = niveauEfficace (carte.jouer (2400), 0);
+
+            // Un pad hors du groupe ne coupe rien
+            moteur.jouerNote (0, 36, 1);
+            carte.jouer (2400);
+            expect (niveauEfficace (carte.jouer (2400), 0) > 0.5f * avant, "un pad hors du groupe ne coupe pas"_fr);
+
+            moteur.modifier ([] (Morceau& mm) { mm.pistes[0].kit.pads[42 - 36].volumeDb = -40.0f; });
+            moteur.jouerNote (0, 42, 127);
+            carte.jouer (960);
+            expect (niveauEfficace (carte.jouer (2400), 0) < 0.05f * avant, "le fermé (presque muet ici) a coupé l'ouvert"_fr);
+        }
+
+        beginTest ("Changer les sons pendant la lecture ne coupe pas le son");
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDeDemonstration(), &banqueEssai());
+            moteur.lancerScene (2);
+
+            for (int i = 0; i < 30; ++i) { carte.jouer (uneSeconde / 10); moteur.avancer(); }
+
+            float plusFaible = 1.0f, plusFort = 0.0f;
+
+            for (int i = 0; i < 40; ++i)
+            {
+                const auto kit = kitsDeDepart::noms()[i % 4];
+                moteur.modifier ([kit] (Morceau& mm) { mm.pistes[0].kit = kitsDeDepart::kit (kit); });
+                auto bloc = carte.jouer (uneSeconde / 10);
+                plusFaible = std::min (plusFaible, niveauEfficace (bloc, 0));
+                plusFort = std::max (plusFort, crete (bloc, 0));
+            }
+
+            expect (plusFaible > 0.005f, "le son reste présent"_fr);
+            expect (plusFort < 2.0f && std::isfinite (plusFort), "pas d'explosion du niveau"_fr);
+        }
+
+        beginTest ("Le kit se sauvegarde avec le morceau");
+        {
+            auto m = morceauDeDemonstration();
+            m.pistes[0].kit.pads[3].hauteur = -5.5f;
+            m.pistes[0].kit.pads[3].son = "Claps/Dub - Clap.wav";
+            m.pistes[0].kit.compression = 0.7f;
+            const auto relu = Morceau::depuisJson (juce::JSON::parse (juce::JSON::toString (m.versJson())));
+            expect (relu == m);
+            expect (relu.pistes[0].kit.pads[42 - 36].etouffement == 1);
+        }
+
+        beginTest ("Position dans le clip qui joue, pour le pas à pas");
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDeDemonstration(), &banqueEssai());
+            moteur.modifier ([] (Morceau& mm) { mm.clic.decompte = 0; });
+            moteur.lancerClip (1, 1);       // basse, 2 mesures
+            carte.jouer (128);
+            moteur.avancer();
+            expect (! moteur.positionDansLeClip (2).has_value(), "rien ne joue sur la piste 3"_fr);
+            carte.jouer (uneSeconde * 5);   // 10 temps : 2 temps dans la 2e boucle... la boucle fait 8 temps
+            const auto pos = moteur.positionDansLeClip (1);
+            expect (pos.has_value());
+            expectWithinAbsoluteError (pos.value_or (-1.0), 2.0, 0.2, "10 temps joués dans une boucle de 8"_fr);
+        }
+    }
+};
+
 static EssaisModele essaisModele;
 static EssaisSorties essaisSorties;
 static EssaisHorloge essaisHorloge;
 static EssaisPush essaisPush;
 static EssaisSession essaisSession;
+static EssaisBatterie essaisBatterie;
 
 } // namespace groovebox
 

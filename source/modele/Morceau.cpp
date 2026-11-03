@@ -118,6 +118,10 @@ juce::var Morceau::versJson() const
         objet->setProperty ("panoramique", p.panoramique);
         objet->setProperty ("mute", p.mute);
         objet->setProperty ("solo", p.solo);
+
+        if (p.estUneBatterie())
+            objet->setProperty ("kit", p.kit.versJson());
+
         listePistes.add (juce::var (objet));
     }
 
@@ -207,6 +211,8 @@ std::array<Piste, nombreDePistes> Morceau::pistesDeDepart()
     for (int i = 0; i < nombreDePistes; ++i)
         pistes[(size_t) i] = { nomDuSon (sons[i]), sons[i] };
 
+    pistes[0].kit = kitsDeDepart::kit ("Analogique");
+    pistes[5].kit = kitsDeDepart::kit ("Minimal");
     return pistes;
 }
 
@@ -263,6 +269,11 @@ Morceau Morceau::depuisJson (const juce::var& v)
             piste.panoramique = juce::jlimit (-1.0f, 1.0f, (float) p.getProperty ("panoramique", 0.0f));
             piste.mute = p.getProperty ("mute", false);
             piste.solo = p.getProperty ("solo", false);
+
+            if (const auto kit = p.getProperty ("kit", {}); kit.isObject())
+                piste.kit = Kit::depuisJson (kit);
+            else if (piste.estUneBatterie() && piste.kit.nom.isEmpty())
+                piste.kit = kitsDeDepart::kit (i == 0 ? "Analogique" : "Minimal");
         }
     }
 
