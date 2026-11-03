@@ -14,7 +14,8 @@ Groovebox logicielle pour Mac, pilotée au Push 2. Le cahier des charges est dan
 | 5b. Générateurs rythmiques | Faite et validée à l'oreille le 03.11.2026 |
 | 6a. Surge XT, jeu en gamme | Faite et validée à l'oreille le 03.11.2026 |
 | 6b. Générateur de basses et mélodies | Faite et validée à l'oreille le 03.11.2026 |
-| 7 à 11 | Pas commencées |
+| 7. Effets | Faite et validée à l'oreille le 03.11.2026 |
+| 8 à 11 | Pas commencées |
 
 ## Organisation
 
@@ -78,4 +79,6 @@ Fait tourner le moteur 60 secondes avec les bips actifs mais muets, puis écrit 
 - Outils : `groovebox --parametres-surge` liste les 776 réglages de Surge ; `--options-surge "A Filter 1 Type,..."` donne leurs choix.
 - Gamme du morceau (bouton Scale) ; mode Note des synthés : un degré par colonne, une quarte par rangée, comme le Push d'Ableton.
 - Niveaux : la batterie sort à -6 dB (facteur 0,5), Surge a un volume général de -4 dB ; la démo culmine sous 0 dB. Limiteur de protection : étape 7.
-- Licences : Surge XT GPL v3 ; Grids (carte de grooves) GPL v3 ; libusb LGPL 2.1 ; Tracktion Engine GPL v3, JUCE AGPL v3. Usage personnel, aucune contrainte.
+- Effets : 3 emplacements par piste, avant son volume. Maison (`EffetsMaison`) : filtre à un bouton, saturation, distorsion lourde (gain jusqu'à +40 dB, de l'écrêtage doux au repliement), punch (attaque, maintien, puissance), grave (renforcé et saturé), delay dub (retour jusqu'à 120 %, borné par la saturation de la boucle), limiteur ; Airwindows du moteur (option `TRACKTION_AIR_WINDOWS`) : DeRez2 (lo-fi), ButterComp2 (compresseur), TapeDelay (écho court), ChorusEnsemble (chorus). Effets de départ : deux pistes de retour (bus 1 delay, bus 2 réverbération du moteur), reprises dans le casque (bus 0). Sortie : filtre global (bande tactile, retour au centre) puis compresseur léger et limiteur à -1 dB ; le casque a son propre limiteur.
+- Push : les 8 boutons du haut de l'écran = envoi momentané au delay ; Add Device ajoute un effet (rappuyer pour confirmer) ; Device passe aussi par les pages d'effets (encodeur 8 : sauter ; Delete + Device : retirer) ; Mix avec Page gauche et droite : volumes, envois delay, envois réverbération, effets de départ et compression de sortie.
+- Licences : Airwindows MIT ; Surge XT GPL v3 ; Grids (carte de grooves) GPL v3 ; libusb LGPL 2.1 ; Tracktion Engine GPL v3, JUCE AGPL v3. Usage personnel, aucune contrainte.

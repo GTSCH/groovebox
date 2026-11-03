@@ -5,6 +5,7 @@
 #include "InstrumentProvisoire.h"
 #include "BatteriePlugin.h"
 #include "SonsDeSynthe.h"
+#include "EffetsMaison.h"
 #include "modele/Morceau.h"
 
 namespace groovebox
@@ -91,6 +92,17 @@ public:
 
     BanqueDeSons& getBanque()                   { return *banque; }
 
+    /** Envoi momentané : tant que c'est tenu, la piste part à fond dans le delay dub. */
+    void envoiMomentane (int piste, bool tenu);
+    bool envoiMomentaneTenu (int piste) const          { return momentanes[(size_t) piste]; }
+
+    /** Filtre global de la sortie (bande tactile) : 0 passe-bas, 0,5 neutre, 1 passe-haut. Jeu en direct, ni sauvegardé ni annulé. */
+    void filtreGlobal (float position);
+
+    /** Plugins d'effet d'une piste, pour les essais. */
+    te::Plugin* effetDeLaPiste (int piste, int emplacement) const   { return pistesMoteur[(size_t) piste].effets[(size_t) emplacement].get(); }
+    DelayDubPlugin* getDelay() const                    { return delay; }
+
     /** Vrai si la piste joue avec Surge XT (sinon : son provisoire ou batterie). */
     bool joueAvecSurge (int piste) const;
 
@@ -152,12 +164,30 @@ private:
         std::array<InstrumentProvisoire*, 2> instruments {};
         std::array<BatteriePlugin*, 2> batteries {};
         std::array<te::Plugin::Ptr, 2> surges;                      ///< Surge XT, s'il est installé (pistes de synthé)
+        std::array<te::Plugin::Ptr, 3> effets;                      ///< Effets d'insertion, avant le volume
+        std::array<std::optional<TypeEffet>, 3> typesDesEffets;
+        te::AuxSendPlugin* envoiDelay = nullptr;
+        te::AuxSendPlugin* envoiReverb = nullptr;
         std::array<std::unique_ptr<PiloteDeSurge>, 2> pilotesSurge;
         te::AuxSendPlugin* envoiCasque = nullptr;
         te::VolumeAndPanPlugin* volume = nullptr;
     };
 
     std::array<PisteMoteur, nombreDePistes> pistesMoteur;
+    std::array<bool, nombreDePistes> momentanes {};
+
+    // Effets de départ et sortie
+    te::AudioTrack* pisteDelay = nullptr;
+    te::AudioTrack* pisteReverb = nullptr;
+    DelayDubPlugin* delay = nullptr;
+    te::ReverbPlugin* reverb = nullptr;
+    std::array<te::AuxSendPlugin*, 2> envoisCasqueDesRetours {};
+    FiltrePlugin* filtreDeSortie = nullptr;
+    LimiteurPlugin* limiteurDeSortie = nullptr;
+    LimiteurPlugin* limiteurDuCasque = nullptr;
+
+    void appliquerEffets (int piste, const Morceau& ancien, bool tout);
+    void appliquerEffetsDeDepart();
 
     // Démarrage : la lecture part quand la position demandée est prise en compte, avec les clips déjà calés
     bool demarrageEnAttente = false;

@@ -24,11 +24,13 @@ public:
     EtatSurface calculerEtat() const;
     void dessinerEcran (juce::Image&) const;
 
-    enum class Page { mix, clic, device, generateur, commun, variation, browse, gamme, macros, melodie, communSynthe };
+    enum class Page { mix, clic, device, generateur, commun, variation, browse, gamme, macros, melodie, communSynthe,
+                      envoisDelay, envoisReverb, departs, effet, ajoutEffet };
     enum class Mode { session, note };
     Page getPage() const                    { return page; }
     Mode getMode() const                    { return mode; }
     int getPadChoisi() const                { return padChoisi; }
+    int getEmplacementEffet() const         { return emplacementEffet; }
 
     /** Jeu en gamme : note MIDI d'un pad (ligne 0 en bas) sur une piste de synthé. */
     int noteDuPad (int ligne, int colonne) const;
@@ -81,7 +83,9 @@ private:
     bool copieFaite = false;
     std::array<bool, nombreEncodeurs> touches {};
     std::array<int, nombreEncodeurs> crans {};
-    std::array<Reglage, 8> pageClic, pageMix, pageDevice, pageBrowse, pageEuclide, pageCartes, pageCommun, pageVariation, pageGamme, pageMacros, pageMelodie, pageCommunSynthe;
+    std::array<Reglage, 8> pageClic, pageMix, pageDevice, pageBrowse, pageEuclide, pageCartes, pageCommun, pageVariation, pageGamme, pageMacros, pageMelodie, pageCommunSynthe,
+                           pageEnvoisDelay, pageEnvoisReverb, pageDeparts, pageEffet, pageAjout;
+    int emplacementEffet = 0, typeAAjouter = 0, emplacementAAjouter = 0;
     int voixEuclidienne = 0;
     bool varierEnDupliquant = false;
     Annonce annonce;
@@ -102,6 +106,11 @@ private:
             case Page::macros:  return pageMacros;
             case Page::melodie: return pageMelodie;
             case Page::communSynthe: return pageCommunSynthe;
+            case Page::envoisDelay: return pageEnvoisDelay;
+            case Page::envoisReverb: return pageEnvoisReverb;
+            case Page::departs: return pageDeparts;
+            case Page::effet:   return pageEffet;
+            case Page::ajoutEffet: return pageAjout;
             case Page::generateur:
             {
                 const auto* g = generateurVise();
@@ -125,6 +134,8 @@ private:
     void choisirDansLeNavigateur();
     void appuyerPadDeNote (int ligne, int colonne, int velocite);
     void preecouterLeSynthe();
+    void pageSuivanteDeDevice();
+    void modifierEffet (int encodeur, std::function<void (Effet&)>);
     void basculerPas (int pas);
     bool shift() const;
     bool tenu (Bouton b) const                      { return surface.estAppuye (b); }

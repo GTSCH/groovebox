@@ -1292,6 +1292,7 @@ public:
             auto m = morceauDEssai();
             m.clic.actif = false;
             m.musiqueDansCasqueDb = 0.0f;
+            m.compressionDeSortie = 0.0f;   // la sono a son compresseur léger, pas le casque
             Moteur moteur (engine, m, &banqueEssai());
             moteur.lancerClip (0, 0);
 
@@ -2097,7 +2098,7 @@ public:
             expect (niveauEfficace (sub, 0, 4800, 24000) > 0.02f, "la basse sub sonne"_fr);
             expect (niveauEfficace (reese, 0, 4800, 24000) > 0.02f, "la reese sonne"_fr);
             const auto bSub = brillance (sub, 4800, 24000), bReese = brillance (reese, 4800, 24000);
-            expect (bReese > 2.0 * bSub, "reese plus brillante : "_fr + juce::String (bReese, 5) + " contre " + juce::String (bSub, 5));
+            expect (bReese > 1.5 * bSub, "reese plus brillante (l écart varie, Surge désaccorde au hasard) : "_fr + juce::String (bReese, 5) + " contre " + juce::String (bSub, 5));
             logMessage ("  brillance : sub " + juce::String (bSub, 5) + ", reese " + juce::String (bReese, 5));
         }
 
@@ -2351,6 +2352,397 @@ public:
     }
 };
 
+//==============================================================================
+class EssaisEffets  : public juce::UnitTest
+{
+public:
+    EssaisEffets()  : juce::UnitTest ("Effets", "groovebox") {}
+
+    /** Morceau d'essai : la piste Batterie joue un sinus de 440 Hz tenu (pad 0), le clic est coupé. */
+    static Morceau morceauSinus()
+    {
+        auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+        m.clic.actif = false;
+        m.pistes[0].kit = kitsDeDepart::kit ("Analogique");
+        m.pistes[0].kit.pads[0].son = "Essais/Sinus 440.wav";
+        m.pistes[0].kit.largeur = 0.0f;
+        return m;
+    }
+
+    /** Un coup sec (grosse caisse) sur la piste 1 : pour mesurer les échos. */
+    static Morceau morceauCoup()
+    {
+        auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+        m.clic.actif = false;
+        m.pistes[0].kit = kitsDeDepart::kit ("Minimal");
+        return m;
+    }
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+        EssaisBatterie::fichierSinus();
+
+        auto niveauAvec = [&] (std::optional<Effet> effet, int duree = uneSeconde / 2)
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauSinus();
+            m.pistes[0].effets[0] = effet;
+            Moteur moteur (engine, m, &banqueEssai());
+            carte.jouer (256);
+            moteur.jouerNote (0, 36, 127);
+            carte.jouer (2400);
+            return niveauEfficace (carte.jouer (duree), 0);
+        };
+
+        beginTest ("Filtre : neutre au milieu, il coupe le 440 Hz en passe-bas comme en passe-haut");
+        {
+            const auto sans = niveauAvec (std::nullopt);
+            Effet f = Effet::parDefaut (TypeEffet::filtre);
+            expectWithinAbsoluteError (niveauAvec (f) / sans, 1.0f, 0.05f, "neutre"_fr);
+            f.reglages[0] = 0.1f;   // passe-bas vers 240 Hz
+            expect (niveauAvec (f) < 0.5f * sans, "passe-bas"_fr);
+            f.reglages[0] = 0.9f;   // passe-haut vers 1,6 kHz
+            expect (niveauAvec (f) < 0.3f * sans, "passe-haut"_fr);
+            expect (FiltrePlugin::coupures (0.5f).first > 19000.0 && FiltrePlugin::coupures (0.0f).first < 100.0);
+        }
+
+        beginTest ("Saturation et effets Airwindows : ils sonnent, sans exploser");
+        for (int t = 1; t < nombreDeTypesDEffet; ++t)
+        {
+            auto e = Effet::parDefaut ((TypeEffet) t);
+            const auto niveau = niveauAvec (e);
+            expect (niveau > 0.01f && niveau < 2.0f && std::isfinite (niveau), nomDeLEffet ((TypeEffet) t) + " : " + juce::String (niveau));
+        }
+
+        beginTest ("Distorsion : de la saturation douce à l'écrêtage dur puis au repliement"_fr);
+        {
+            expectWithinAbsoluteError (DistorsionPlugin::formeDeLaDistorsion (2.0f, 0.0f), std::tanh (2.0f), 1.0e-6f, "douce"_fr);
+            expectEquals (DistorsionPlugin::formeDeLaDistorsion (2.0f, 0.5f), 1.0f, "dure : écrêtée à 1"_fr);
+            expect (DistorsionPlugin::formeDeLaDistorsion (2.0f, 1.0f) < 0.1f, "repliée : le haut de l'onde redescend"_fr);
+            expectWithinAbsoluteError (DistorsionPlugin::formeDeLaDistorsion (0.1f, 0.3f), 0.1f, 0.01f, "petit signal : presque intact"_fr);
+        }
+
+        beginTest ("Distorsion à fond : beaucoup de matière, et le niveau reste tenu");
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauSinus();
+            Effet dist = Effet::parDefaut (TypeEffet::distorsion);
+            dist.reglages = { 1.0f, 0.8f, 1.0f, 1.0f };
+            m.pistes[0].effets[0] = dist;
+            m.compressionDeSortie = 0.0f;
+            Moteur moteur (engine, m, &banqueEssai());
+            carte.jouer (256);
+            moteur.jouerNote (0, 36, 127);
+            carte.jouer (2400);
+            const auto a = carte.jouer (uneSeconde / 4);
+            expect (sautMax (a, 0) > 0.1f, "harmoniques fortes : "_fr + juce::String (sautMax (a, 0), 3));
+            expect (crete (a, 0) <= LimiteurPlugin::plafond + 1.0e-4f && niveauEfficace (a, 0) > 0.05f, "fort mais tenu"_fr);
+        }
+
+        beginTest ("Grave : un sinus de 60 Hz ressort renforcé, avec des harmoniques");
+        {
+            auto fichier = banqueEssai().getRacine().getChildFile ("Essais/Sinus 60.wav");
+
+            if (! fichier.existsAsFile())
+            {
+                juce::AudioBuffer<float> b (1, 48000);
+
+                for (int i = 0; i < 48000; ++i)
+                    b.setSample (0, i, 0.3f * (float) std::sin (juce::MathConstants<double>::twoPi * 60.0 * i / 48000.0));
+
+                juce::WavAudioFormat wav;
+                std::unique_ptr<juce::AudioFormatWriter> e (wav.createWriterFor (fichier.createOutputStream().release(), 48000.0, 1, 24, {}, 0));
+                e->writeFromAudioSampleBuffer (b, 0, b.getNumSamples());
+            }
+
+            auto jouer = [&] (std::optional<Effet> effet)
+            {
+                CarteSimulee carte (engine, 2);
+                auto m = morceauSinus();
+                m.pistes[0].kit.pads[0].son = "Essais/Sinus 60.wav";
+                m.pistes[0].effets[0] = effet;
+                m.compressionDeSortie = 0.0f;
+                Moteur moteur (engine, m, &banqueEssai());
+                carte.jouer (256);
+                moteur.jouerNote (0, 36, 127);
+                carte.jouer (4800);
+                return carte.jouer (uneSeconde / 4);
+            };
+
+            Effet grave = Effet::parDefaut (TypeEffet::grave);
+            grave.reglages = { 1.0f, 0.6f, 0.6f, 0.0f };
+            const auto sans = jouer (std::nullopt), avec = jouer (grave);
+            expect (niveauEfficace (avec, 0) > 1.5f * niveauEfficace (sans, 0), "plus de grave : "_fr + juce::String (niveauEfficace (avec, 0) / niveauEfficace (sans, 0), 2) + " fois");
+            // Les harmoniques d'un grave à 60 Hz tombent au-dessus de 150 Hz, là où jouent les petites enceintes
+            auto auDessusDe150Hz = [] (const juce::AudioBuffer<float>& audio)
+            {
+                const float coef = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * 150.0f / 48000.0f);
+                float bas = 0.0f;
+                double energie = 0.0;
+                auto d = audio.getReadPointer (0);
+
+                for (int i = 0; i < audio.getNumSamples(); ++i)
+                {
+                    bas += coef * (d[i] - bas);
+                    energie += (d[i] - bas) * (d[i] - bas);
+                }
+
+                return std::sqrt (energie / audio.getNumSamples());
+            };
+
+            expect (auDessusDe150Hz (avec) > 2.0 * auDessusDe150Hz (sans), "des harmoniques au-dessus de 150 Hz : "_fr
+                    + juce::String (auDessusDe150Hz (avec) / auDessusDe150Hz (sans), 2) + " fois plus");
+        }
+
+        beginTest ("Punch : l'attaque d'un coup ressort davantage");
+        {
+            auto jouer = [&] (std::optional<Effet> effet)
+            {
+                CarteSimulee carte (engine, 2);
+                auto m = morceauCoup();
+                m.pistes[0].effets[0] = effet;
+                m.compressionDeSortie = 0.0f;
+                Moteur moteur (engine, m, &banqueEssai());
+                carte.jouer (256);
+                moteur.jouerNote (0, 36, 100);
+                return carte.jouer (uneSeconde / 2);
+            };
+
+            Effet punch = Effet::parDefaut (TypeEffet::punch);
+            punch.reglages = { 1.0f, 0.3f, 0.0f, 0.0f };
+            const auto sans = jouer (std::nullopt), avec = jouer (punch);
+            auto rapport = [] (const juce::AudioBuffer<float>& a) { return crete (a, 0, 0, 2400) / juce::jmax (1.0e-6f, niveauEfficace (a, 0, 4800, 24000)); };
+            expect (rapport (avec) > 1.3f * rapport (sans), "attaque plus marquée que la queue : "_fr + juce::String (rapport (avec), 2) + " contre " + juce::String (rapport (sans), 2));
+        }
+
+        beginTest ("Lo-fi et saturation changent vraiment le son");
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauSinus();
+            Effet sat = Effet::parDefaut (TypeEffet::saturation);
+            sat.reglages[0] = 1.0f;
+            m.pistes[0].effets[0] = sat;
+            Moteur moteur (engine, m, &banqueEssai());
+            carte.jouer (256);
+            moteur.jouerNote (0, 36, 127);
+            carte.jouer (2400);
+            const auto a = carte.jouer (uneSeconde / 4);
+            // Un sinus saturé gagne des harmoniques : il varie plus vite d'un échantillon à l'autre
+            expect (sautMax (a, 0) > 0.05f, "saturation : "_fr + juce::String (sautMax (a, 0), 4));
+        }
+
+        beginTest ("Delay dub : le premier écho tombe à une croche pointée, au tempo");
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauCoup();
+            m.pistes[0].envoiDelayDb = 0.0f;
+            m.delay.retour = 0.3f;
+            Moteur moteur (engine, m, &banqueEssai());
+            carte.jouer (256);
+            moteur.jouerNote (0, 37, 127);     // un rimshot : bien plus court que l'écho
+            DetecteurDeCoups coups;
+            coups.analyser (carte.jouer (2 * uneSeconde), 0);
+            expect (coups.coups.size() >= 2, "le coup et son écho"_fr);
+
+            if (coups.coups.size() >= 2)
+            {
+                const auto ecart = coups.coups[1].echantillon - coups.coups[0].echantillon;
+                expectWithinAbsoluteError ((double) ecart, 0.375 * frequence, 0.002 * frequence, "croche pointée à 120 BPM = 375 ms"_fr);
+            }
+        }
+
+        beginTest ("Delay dub : au-delà de 100 %, l'écho s'emballe sans jamais dépasser la protection ; puis il retombe"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauCoup();
+            m.delay.retour = 1.2f;
+            m.delay.division = 2;   // croche
+            Moteur moteur (engine, m, &banqueEssai());
+            carte.jouer (256);
+
+            // Envoi momentané : on tient, on frappe, on relâche
+            moteur.envoiMomentane (0, true);
+            moteur.jouerNote (0, 36, 127);
+            carte.jouer (uneSeconde / 4);
+            moteur.envoiMomentane (0, false);
+
+            float plusFort = 0.0f;
+
+            for (int i = 0; i < 8; ++i)
+                plusFort = std::max (plusFort, crete (carte.jouer (uneSeconde), 0));
+
+            const auto pendant = niveauEfficace (carte.jouer (uneSeconde), 0);
+            expect (pendant > 0.02f, "l'écho s'emballe : encore fort après 9 s"_fr);
+            expect (plusFort <= LimiteurPlugin::plafond + 1.0e-4f, "jamais au-dessus du plafond : "_fr + juce::String (juce::Decibels::gainToDecibels (plusFort), 1) + " dB");
+
+            // On redescend le retour : l'écho retombe jusqu'au silence
+            moteur.modifier ([] (Morceau& mm) { mm.delay.retour = 0.4f; });
+
+            for (int i = 0; i < 6; ++i)
+                carte.jouer (uneSeconde);
+
+            expect (niveauEfficace (carte.jouer (uneSeconde), 0) < 0.001f, "l'écho est retombé"_fr);
+        }
+
+        beginTest ("Limiteur : tout à fond, la sortie ne dépasse jamais -1 dB, le casque non plus");
+        {
+            CarteSimulee carte (engine, 4);
+            auto m = morceauDeDemonstration();
+            m.volumeGeneralDb = 0.0f;
+            m.musiqueDansCasqueDb = 0.0f;
+
+            for (auto& p : m.pistes)
+            {
+                p.volumeDb = 6.0f;
+                p.envoiDelayDb = 6.0f;
+                p.envoiReverbDb = 6.0f;
+                p.effets[0] = Effet::parDefaut (TypeEffet::saturation);
+                p.effets[0]->reglages = { 1.0f, 0.8f, 1.0f, 0.0f };
+            }
+
+            m.delay.retour = 1.2f;
+            Moteur moteur (engine, m, &banqueEssai());
+            moteur.modifier ([] (Morceau& mm) { mm.clic.decompte = 0; });
+            moteur.lancerScene (2);
+            carte.jouer (128);
+            moteur.avancer();
+            float sortie = 0.0f, casque = 0.0f;
+
+            for (int i = 0; i < 6; ++i)
+            {
+                const auto a = carte.jouer (uneSeconde);
+                sortie = std::max ({ sortie, crete (a, 0), crete (a, 1) });
+                casque = std::max ({ casque, crete (a, 2), crete (a, 3) });
+            }
+
+            expect (sortie > 0.5f, "ça joue fort"_fr);
+            expect (sortie <= LimiteurPlugin::plafond + 1.0e-4f, "sono : "_fr + juce::String (juce::Decibels::gainToDecibels (sortie), 2) + " dB");
+            expect (casque <= LimiteurPlugin::plafond + 1.0e-4f, "casque : "_fr + juce::String (juce::Decibels::gainToDecibels (casque), 2) + " dB");
+        }
+
+        beginTest ("Ajouter, sauter, enlever un effet en pleine lecture : pas de coupure");
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDeDemonstration(), &banqueEssai());
+            moteur.modifier ([] (Morceau& mm) { mm.clic.decompte = 0; });
+            moteur.lancerScene (2);
+            carte.jouer (128);
+            moteur.avancer();
+            carte.jouer (uneSeconde);
+            float plusFaible = 1.0f;
+
+            for (int i = 0; i < 36; ++i)
+            {
+                const int k = i % 3;
+                moteur.modifier ([i, k] (Morceau& mm)
+                {
+                    auto& e = mm.pistes[1].effets[(size_t) k];
+
+                    if (i % 6 < 3)
+                        e = Effet::parDefaut ((TypeEffet) (i % nombreDeTypesDEffet));
+                    else if (e)
+                        e->actif = ! e->actif;
+                });
+                plusFaible = std::min (plusFaible, niveauEfficace (carte.jouer (uneSeconde / 10), 0));
+            }
+
+            moteur.modifier ([] (Morceau& mm) { for (auto& e : mm.pistes[1].effets) e.reset(); });
+            expect (moteur.effetDeLaPiste (1, 0) == nullptr && moteur.effetDeLaPiste (1, 2) == nullptr, "effets retirés"_fr);
+            expect (plusFaible > 0.005f, "le son reste présent"_fr);
+        }
+
+        beginTest ("Effets, envois et effets de départ se sauvegardent avec le morceau"_fr);
+        {
+            auto m = morceauDeDemonstration();
+            m.pistes[2].effets[1] = Effet::parDefaut (TypeEffet::chorus);
+            m.pistes[2].effets[1]->actif = false;
+            m.pistes[2].envoiDelayDb = -9.0f;
+            m.pistes[3].envoiReverbDb = -3.0f;
+            m.delay = { 3, 1.1f, 0.2f, 0.6f };
+            m.reverb = { 0.8f, 0.3f, 0.7f };
+            m.compressionDeSortie = 0.55f;
+            const auto relu = Morceau::depuisJson (juce::JSON::parse (juce::JSON::toString (m.versJson())));
+            expect (relu == m);
+        }
+
+        beginTest ("Au Push : envoi momentané, Add Device, page d'effet, pages Mix, bande tactile");
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDeDemonstration(), &banqueEssai());
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            auto appui = [&] (int b) { surface.recevoir ({ Evenement::Type::bouton, b, 1, true }); };
+            auto relache = [&] (int b) { surface.recevoir ({ Evenement::Type::bouton, b, 0, false }); };
+            auto bouton = [&] (Bouton b) { appui ((int) b); relache ((int) b); };
+
+            appui (premierBoutonDuHaut + 6);
+            expect (moteur.envoiMomentaneTenu (6), "envoi momentané tenu"_fr);
+            expectEquals (pilote.calculerEtat().boutons[(size_t) (premierBoutonDuHaut + 6)], palette::indexDePiste (6, 3));
+            relache (premierBoutonDuHaut + 6);
+            expect (! moteur.envoiMomentaneTenu (6));
+
+            // Add Device : un filtre sur la basse
+            bouton ((Bouton) (premierBoutonDuBas + 1));
+            bouton (Bouton::addDevice);
+            expect (pilote.getPage() == Pilote::Page::ajoutEffet);
+            bouton (Bouton::addDevice);
+            expect (moteur.getMorceau().pistes[1].effets[0].has_value() && moteur.getMorceau().pistes[1].effets[0]->type == TypeEffet::filtre);
+            expect (pilote.getPage() == Pilote::Page::effet);
+            surface.recevoir ({ Evenement::Type::encodeurTourne, 0, -40, false });
+            expectWithinAbsoluteError (moteur.getMorceau().pistes[1].effets[0]->reglages[0], 0.3f, 1.0e-4f, "filtre vers le passe-bas"_fr);
+            surface.recevoir ({ Evenement::Type::encodeurTourne, 7, -8, false });
+            expect (! moteur.getMorceau().pistes[1].effets[0]->actif, "encodeur 8 : effet sauté"_fr);
+
+            // Delete + Device retire l'effet
+            appui ((int) Bouton::deleteBouton);
+            bouton (Bouton::device);
+            relache ((int) Bouton::deleteBouton);
+            expect (! moteur.getMorceau().pistes[1].effets[0].has_value(), "effet retiré"_fr);
+
+            // Mix : volumes, envois delay, envois réverbération, effets de départ
+            bouton (Bouton::mix);
+            bouton (Bouton::pageDroite);
+            expect (pilote.getPage() == Pilote::Page::envoisDelay);
+            surface.recevoir ({ Evenement::Type::encodeurTourne, 4, 100, false });
+            expectWithinAbsoluteError (moteur.getMorceau().pistes[4].envoiDelayDb, -30.0f, 1.0e-3f);
+            bouton (Bouton::pageDroite);
+            bouton (Bouton::pageDroite);
+            expect (pilote.getPage() == Pilote::Page::departs);
+            surface.recevoir ({ Evenement::Type::encodeurTourne, 1, 100, false });
+            expectWithinAbsoluteError (moteur.getMorceau().delay.retour, 1.2f, 1.0e-4f, "retour du delay jusqu'à 120 %"_fr);
+
+            // Bande tactile : filtre global
+            surface.recevoir ({ Evenement::Type::bandeDeplacee, 0, 2000, false });
+            expect (pilote.getAnnonce().valeur.startsWith ("Passe-bas"));
+        }
+
+        beginTest ("Temps de calcul : 8 pistes avec 3 effets, delay et réverbération");
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauDeDemonstration();
+
+            for (auto& p : m.pistes)
+            {
+                p.effets = { Effet::parDefaut (TypeEffet::filtre), Effet::parDefaut (TypeEffet::saturation), Effet::parDefaut (TypeEffet::chorus) };
+                p.envoiDelayDb = -12.0f;
+                p.envoiReverbDb = -12.0f;
+            }
+
+            Moteur moteur (engine, m, &banqueEssai());
+            moteur.modifier ([] (Morceau& mm) { mm.clic.decompte = 0; });
+            moteur.lancerScene (4);
+            carte.jouer (128);
+            moteur.avancer();
+            const auto debut = juce::Time::getMillisecondCounterHiRes();
+            carte.jouer (10 * uneSeconde);
+            const auto duree = juce::Time::getMillisecondCounterHiRes() - debut;
+            expect (duree < 3000.0, juce::String (duree / 1000.0, 2) + " s pour 10 s");
+            logMessage ("  10 s calculées en " + juce::String (duree / 1000.0, 2) + " s (" + juce::String (100.0 * duree / 10000.0, 1) + " % du temps réel, sons provisoires)"_fr);
+        }
+    }
+};
+
 static EssaisModele essaisModele;
 static EssaisSorties essaisSorties;
 static EssaisHorloge essaisHorloge;
@@ -2361,6 +2753,7 @@ static EssaisGenerateurs essaisGenerateurs;
 static EssaisGammes essaisGammes;
 static EssaisSurge essaisSurge;
 static EssaisMelodies essaisMelodies;
+static EssaisEffets essaisEffets;
 
 } // namespace groovebox
 

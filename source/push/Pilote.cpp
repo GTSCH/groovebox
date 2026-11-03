@@ -194,6 +194,67 @@ Pilote::Pilote (Moteur& m, Surface& s)  : moteur (m), surface (s)
                             [this] (int pas, bool) { if (auto c = crantsDiscrets (1, pas)) modifierMelodie (1, [=] (GenerateurMelodique& g) { g.graine = (juce::uint32) juce::jmax (1, (int) g.graine + c); }); }, actif };
     pageCommunSynthe[2] = pageCommun[4];
 
+    // Pages Mix : envois vers le delay et la réverbération, puis réglages des effets de départ et de la sortie
+    for (int i = 0; i < nombreDePistes; ++i)
+    {
+        pageEnvoisDelay[(size_t) i] = { {}, [this, i] { return formaterDb (moteur.getMorceau().pistes[(size_t) i].envoiDelayDb); },
+                                        [this, i] { return (moteur.getMorceau().pistes[(size_t) i].envoiDelayDb + 60.0f) / 66.0f; },
+                                        [this, i] (int pas, bool fin) { moteur.modifier ([=] (Morceau& m) { auto& e = m.pistes[(size_t) i].envoiDelayDb; e = juce::jlimit (-60.0f, 6.0f, e + (float) pas * (fin ? 0.05f : 0.3f)); }, "envoi delay " + juce::String (i)); },
+                                        palette::couleurDePiste (i) };
+        pageEnvoisReverb[(size_t) i] = { {}, [this, i] { return formaterDb (moteur.getMorceau().pistes[(size_t) i].envoiReverbDb); },
+                                         [this, i] { return (moteur.getMorceau().pistes[(size_t) i].envoiReverbDb + 60.0f) / 66.0f; },
+                                         [this, i] (int pas, bool fin) { moteur.modifier ([=] (Morceau& m) { auto& e = m.pistes[(size_t) i].envoiReverbDb; e = juce::jlimit (-60.0f, 6.0f, e + (float) pas * (fin ? 0.05f : 0.3f)); }, "envoi reverb " + juce::String (i)); },
+                                         palette::couleurDePiste (i) };
+    }
+
+    auto reglageDepart = [this, pourcent] (juce::String nom, std::function<float& (Morceau&)> champ, float maximum, int encodeur)
+    {
+        return Reglage { nom, [this, champ, pourcent, maximum] { auto m = moteur.getMorceau(); return pourcent (champ (m) / maximum); },
+                         [this, champ, maximum] { auto m = moteur.getMorceau(); return champ (m) / maximum; },
+                         [this, champ, maximum, encodeur] (int pas, bool fin) { moteur.modifier ([=] (Morceau& m) { auto& v = champ (m); v = juce::jlimit (0.0f, maximum, v + (float) pas * (fin ? 0.002f : 0.01f) * maximum); }, "depart " + juce::String (encodeur)); },
+                         premier };
+    };
+
+    pageDeparts[0] = { "Delay temps", [this] { return DelayDub::nomsDesDivisions()[moteur.getMorceau().delay.division]; },
+                       [this] { return (float) moteur.getMorceau().delay.division / 5.0f; },
+                       [this] (int pas, bool) { if (auto c = crantsDiscrets (0, pas)) moteur.modifier ([=] (Morceau& m) { m.delay.division = juce::jlimit (0, 5, m.delay.division + c); }, "depart 0"); }, premier };
+    pageDeparts[1] = reglageDepart ("Delay retour", [] (Morceau& m) -> float& { return m.delay.retour; }, 1.2f, 1);
+    pageDeparts[1].valeur = [this] { return juce::String (juce::roundToInt (moteur.getMorceau().delay.retour * 100.0f)) + " %"; };
+    pageDeparts[2] = reglageDepart ("Delay filtre", [] (Morceau& m) -> float& { return m.delay.filtre; }, 1.0f, 2);
+    pageDeparts[3] = reglageDepart ("Delay grain", [] (Morceau& m) -> float& { return m.delay.saturation; }, 1.0f, 3);
+    pageDeparts[4] = reglageDepart ("Rév. taille"_fr, [] (Morceau& m) -> float& { return m.reverb.taille; }, 1.0f, 4);
+    pageDeparts[5] = reglageDepart ("Rév. durée"_fr, [] (Morceau& m) -> float& { return m.reverb.duree; }, 1.0f, 5);
+    pageDeparts[6] = reglageDepart ("Rév. couleur"_fr, [] (Morceau& m) -> float& { return m.reverb.couleur; }, 1.0f, 6);
+    pageDeparts[7] = reglageDepart ("Compression", [] (Morceau& m) -> float& { return m.compressionDeSortie; }, 1.0f, 7);
+
+    // Page d'un effet d'insertion : ses réglages (1 à 4), et l'encodeur 8 pour le sauter
+    for (int k = 0; k < 4; ++k)
+        pageEffet[(size_t) k] = { {}, [this, k, pourcent] {
+                                      const auto& e = moteur.getMorceau().pistes[(size_t) pisteChoisie].effets[(size_t) emplacementEffet];
+                                      if (! e || k >= Effet::nomsDesReglages (e->type).size()) return juce::String();
+                                      if (e->type == TypeEffet::filtre && k == 0)
+                                      {
+                                          const auto f = e->reglages[0];
+                                          return std::abs (f - 0.5f) < 0.01f ? juce::String ("Neutre") : (f < 0.5f ? "Passe-bas " : "Passe-haut ") + juce::String (juce::roundToInt (std::abs (f - 0.5f) * 200.0f));
+                                      }
+                                      return pourcent (e->reglages[(size_t) k]); },
+                                  [this, k] { const auto& e = moteur.getMorceau().pistes[(size_t) pisteChoisie].effets[(size_t) emplacementEffet]; return e ? e->reglages[(size_t) k] : 0.0f; },
+                                  [this, k] (int pas, bool fin) { modifierEffet (k, [=] (Effet& e) { if (k < Effet::nomsDesReglages (e.type).size()) e.reglages[(size_t) k] = juce::jlimit (0.0f, 1.0f, e.reglages[(size_t) k] + (float) pas * (fin ? 0.001f : 0.005f)); }); },
+                                  actif };
+
+    pageEffet[7] = { "Actif", [this] { const auto& e = moteur.getMorceau().pistes[(size_t) pisteChoisie].effets[(size_t) emplacementEffet]; return e && e->actif ? juce::String ("Oui") : juce::String ("Sauté"_fr); },
+                     [this] { const auto& e = moteur.getMorceau().pistes[(size_t) pisteChoisie].effets[(size_t) emplacementEffet]; return e && e->actif ? 1.0f : 0.0f; },
+                     [this] (int pas, bool) { if (auto c = crantsDiscrets (7, pas)) modifierEffet (7, [=] (Effet& e) { e.actif = c > 0; }); }, premier };
+
+    // Page Add Device : choisir l'effet et l'emplacement, puis rappuyer sur Add Device
+    pageAjout[0] = { "Effet", [this] { return nomDeLEffet ((TypeEffet) typeAAjouter); }, [this] { return (float) typeAAjouter / (float) (nombreDeTypesDEffet - 1); },
+                     [this] (int pas, bool) { if (auto c = crantsDiscrets (0, pas)) typeAAjouter = juce::jlimit (0, nombreDeTypesDEffet - 1, typeAAjouter + c); }, premier };
+    pageAjout[1] = { "Emplacement", [this] {
+                         const auto& e = moteur.getMorceau().pistes[(size_t) pisteChoisie].effets[(size_t) emplacementAAjouter];
+                         return juce::String (emplacementAAjouter + 1) + (e ? " (" + nomDeLEffet (e->type) + ")" : juce::String (" (libre)")); },
+                     [this] { return (float) emplacementAAjouter / 2.0f; },
+                     [this] (int pas, bool) { if (auto c = crantsDiscrets (1, pas)) emplacementAAjouter = juce::jlimit (0, 2, emplacementAAjouter + c); }, premier };
+
     // Page Variation (bouton Clip) : ce que fera Shift + Duplicate
     auto variation = [this] () -> const Variation& { return moteur.getMorceau().variation; };
     pageVariation[0] = { "Quantité"_fr, [variation, pourcent] { return pourcent (variation().quantite); }, [variation] { return variation().quantite; },
@@ -260,6 +321,40 @@ int Pilote::crantsDiscrets (int encodeur, int pas)
     const int changement = c / 8;
     c -= changement * 8;
     return changement;
+}
+
+void Pilote::modifierEffet (int encodeur, std::function<void (Effet&)> f)
+{
+    moteur.modifier ([=, p = pisteChoisie, k = emplacementEffet] (Morceau& m)
+    {
+        if (auto& e = m.pistes[(size_t) p].effets[(size_t) k])
+            f (*e);
+    }, "effet " + juce::String (emplacementEffet) + " " + juce::String (encodeur));
+}
+
+void Pilote::pageSuivanteDeDevice()
+{
+    // Les pages de la piste, puis une page par effet d'insertion
+    const auto& p = moteur.getMorceau().pistes[(size_t) pisteChoisie];
+    std::vector<std::pair<Page, int>> pages;
+
+    if (p.estUneBatterie())
+        pages = { { Page::device, 0 }, { Page::generateur, 0 }, { Page::commun, 0 } };
+    else
+        pages = { { Page::macros, 0 }, { Page::melodie, 0 }, { Page::communSynthe, 0 } };
+
+    for (int k = 0; k < 3; ++k)
+        if (p.effets[(size_t) k])
+            pages.push_back ({ Page::effet, k });
+
+    size_t i = 0;
+
+    while (i < pages.size() && ! (pages[i].first == page && (page != Page::effet || pages[i].second == emplacementEffet)))
+        ++i;
+
+    const auto suivante = i < pages.size() ? pages[(i + 1) % pages.size()] : pages.front();
+    page = suivante.first;
+    emplacementEffet = suivante.second;
 }
 
 const Generateur* Pilote::generateurVise() const
@@ -603,7 +698,16 @@ void Pilote::traiter (const Evenement& e)
             break;
 
         case Evenement::Type::bouton:
-            if (e.appuye)
+            if (e.numero >= premierBoutonDuHaut && e.numero < premierBoutonDuHaut + 8)
+            {
+                // Envoi momentané vers le delay dub, tant que le bouton est tenu
+                const int piste = e.numero - premierBoutonDuHaut;
+                moteur.envoiMomentane (piste, e.appuye);
+
+                if (e.appuye)
+                    annoncer ("Envoi au delay"_fr, moteur.getMorceau().pistes[(size_t) piste].nom);
+            }
+            else if (e.appuye)
                 appuyer (e.numero);
             else
                 relacher (e.numero);
@@ -624,13 +728,19 @@ void Pilote::traiter (const Evenement& e)
             break;
 
         case Evenement::Type::bandeTouchee:
-            if (e.appuye)
-                annoncer ("Bande tactile", "Filtre global à l'étape 7"_fr);
             break;
 
         case Evenement::Type::bandeDeplacee:
-            annoncer ("Bande tactile", juce::String (juce::roundToInt (e.valeur * 100.0 / 16383.0)) + " %");
+        {
+            // Filtre global : en bas passe-bas, au milieu neutre, en haut passe-haut
+            const auto position = (float) e.valeur / 16383.0f;
+            moteur.filtreGlobal (std::abs (position - 0.5f) < 0.02f ? 0.5f : position);
+
+            if (std::abs (position - 0.5f) >= 0.02f)
+                annoncer ("Filtre global", position < 0.5f ? "Passe-bas " + juce::String (juce::roundToInt ((0.5f - position) * 200.0f))
+                                                           : "Passe-haut " + juce::String (juce::roundToInt ((position - 0.5f) * 200.0f)));
             break;
+        }
     }
 
     rafraichir();
@@ -991,18 +1101,31 @@ void Pilote::appuyer (int bouton)
             return;
 
         case Bouton::device:
+            if (tenu (Bouton::deleteBouton) && page == Page::effet)
+            {
+                const auto nom = nomDeLEffet (morceau.pistes[(size_t) pisteChoisie].effets[(size_t) emplacementEffet]->type);
+                moteur.modifier ([p = pisteChoisie, k = emplacementEffet] (Morceau& m) { m.pistes[(size_t) p].effets[(size_t) k].reset(); });
+                pageSuivanteDeDevice();
+                annoncer ("Effet retiré"_fr, nom);
+                return;
+            }
+
+            pageSuivanteDeDevice();
+
+            if (page == Page::effet)
+            {
+                annoncer ("Effet "_fr + juce::String (emplacementEffet + 1), nomDeLEffet (moteur.getMorceau().pistes[(size_t) pisteChoisie].effets[(size_t) emplacementEffet]->type));
+                return;
+            }
+
             if (! pisteChoisieEstUneBatterie())
             {
-                // Device fait tourner les pages : macros du son, mélodie, réglages communs
-                page = page == Page::macros ? Page::melodie : page == Page::melodie ? Page::communSynthe : Page::macros;
                 annoncer ("Device", page == Page::macros ? morceau.pistes[(size_t) pisteChoisie].sonDeSynthe + (moteur.joueAvecSurge (pisteChoisie) ? juce::String() : juce::String (" (Surge XT absent : son provisoire)"))
                                   : page == Page::melodie ? "Mélodie "_fr + (melodieVisee() ? nomDuStyle (melodieVisee()->style) : juce::String ("(le clip deviendra généré)"_fr))
                                                           : juce::String ("Swing, graine, longueur"));
                 return;
             }
 
-            // Device fait tourner les pages : pad, générateur, réglages communs
-            page = page == Page::device ? Page::generateur : page == Page::generateur ? Page::commun : Page::device;
             annoncer ("Device", page == Page::device ? kitsDeDepart::nomsDesPads()[(size_t) padChoisi] + ", kit " + morceau.pistes[(size_t) pisteChoisie].kit.nom
                               : page == Page::generateur ? "Générateur "_fr + (generateurVise() ? nomDuMoteur (generateurVise()->moteur) : juce::String ("(le clip deviendra généré)"_fr))
                                                          : juce::String ("Swing, humanisation, roulement, graine, longueur"));
@@ -1034,6 +1157,18 @@ void Pilote::appuyer (int bouton)
 
         case Bouton::pageGauche:
         case Bouton::pageDroite:
+            if (page == Page::mix || page == Page::envoisDelay || page == Page::envoisReverb || page == Page::departs)
+            {
+                static constexpr Page pagesDuMix[] = { Page::mix, Page::envoisDelay, Page::envoisReverb, Page::departs };
+                int i = 0;
+                while (pagesDuMix[i] != page) ++i;
+                i = juce::jlimit (0, 3, i + ((Bouton) bouton == Bouton::pageDroite ? 1 : -1));
+                page = pagesDuMix[i];
+                static const juce::StringArray noms { "Volumes", "Envois au delay dub", "Envois à la réverbération"_fr, "Delay, réverbération, sortie"_fr };
+                annoncer ("Mix", noms[i]);
+                return;
+            }
+
             if (mode == Mode::note)
             {
                 const int pages = juce::jmax (1, (nombreDePas() + 31) / 32);
@@ -1044,6 +1179,27 @@ void Pilote::appuyer (int bouton)
 
         case Bouton::accent:
             return;     // se tient, avec un pad ou un pas
+
+        case Bouton::addDevice:
+            if (page == Page::ajoutEffet)
+            {
+                moteur.modifier ([p = pisteChoisie, k = emplacementAAjouter, t = typeAAjouter] (Morceau& m) { m.pistes[(size_t) p].effets[(size_t) k] = Effet::parDefaut ((TypeEffet) t); });
+                page = Page::effet;
+                emplacementEffet = emplacementAAjouter;
+                annoncer ("Effet ajouté"_fr, nomDeLEffet ((TypeEffet) typeAAjouter) + ", emplacement " + juce::String (emplacementAAjouter + 1));
+            }
+            else
+            {
+                // On propose le premier emplacement libre
+                emplacementAAjouter = 0;
+
+                while (emplacementAAjouter < 2 && morceau.pistes[(size_t) pisteChoisie].effets[(size_t) emplacementAAjouter])
+                    ++emplacementAAjouter;
+
+                page = Page::ajoutEffet;
+                annoncer ("Add Device", "Encodeur 1 : effet ; 2 : emplacement ; rappuie pour ajouter"_fr);
+            }
+            return;
 
         case Bouton::mix:
             page = Page::mix;
@@ -1182,6 +1338,10 @@ EtatSurface Pilote::calculerEtat() const
         etat.boutons[(size_t) (43 - k)] = index;
     }
 
+    // Boutons du haut : envoi momentané, allumés fort tant qu'on les tient
+    for (int piste = 0; piste < nombreDePistes; ++piste)
+        etat.boutons[(size_t) (premierBoutonDuHaut + piste)] = palette::indexDePiste (piste, moteur.envoiMomentaneTenu (piste) ? 3 : 0);
+
     // Boutons de piste sous l'écran : couleur de la piste, éteints si coupée, bleus en solo
     for (int piste = 0; piste < nombreDePistes; ++piste)
     {
@@ -1212,6 +1372,13 @@ EtatSurface Pilote::calculerEtat() const
     blanc (Bouton::note, mode == Mode::note);
     blanc (Bouton::accent, tenu (Bouton::accent));
     blanc (Bouton::scale, page == Page::gamme);
+    blanc (Bouton::addDevice, page == Page::ajoutEffet);
+
+    if (page == Page::mix || page == Page::envoisDelay || page == Page::envoisReverb || page == Page::departs)
+    {
+        if (page != Page::mix) blanc (Bouton::pageGauche, false);
+        if (page != Page::departs) blanc (Bouton::pageDroite, false);
+    }
 
     if (mode == Mode::note && ! morceau.pistes[(size_t) pisteChoisie].estUneBatterie())
     {
@@ -1318,7 +1485,7 @@ void Pilote::dessinerEcran (juce::Image& image) const
 
         juce::String nom = r.nom;
 
-        if (page == Page::mix)
+        if (page == Page::mix || page == Page::envoisDelay || page == Page::envoisReverb)
         {
             // Colonne d'une piste : bandeau de couleur, nom, état
             const auto& piste = morceau.pistes[(size_t) i];
@@ -1346,6 +1513,15 @@ void Pilote::dessinerEcran (juce::Image& image) const
 
 void Pilote::rafraichir()
 {
+    if (page == Page::effet)
+    {
+        const auto& e = moteur.getMorceau().pistes[(size_t) pisteChoisie].effets[(size_t) emplacementEffet];
+        const auto noms = e ? Effet::nomsDesReglages (e->type) : juce::StringArray();
+
+        for (int k = 0; k < 4; ++k)
+            pageEffet[(size_t) k].nom = noms[k];
+    }
+
     if (page == Page::macros)
     {
         const auto& p = moteur.getMorceau().pistes[(size_t) pisteChoisie];

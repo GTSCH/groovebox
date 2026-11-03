@@ -121,6 +121,20 @@ juce::var Morceau::versJson() const
     racine->setProperty ("calage", nomsDesCalages[(int) calage]);
     racine->setProperty ("swing", swing);
     racine->setProperty ("gamme", gamme.versJson());
+
+    auto d = new juce::DynamicObject();
+    d->setProperty ("division", delay.division);
+    d->setProperty ("retour", delay.retour);
+    d->setProperty ("filtre", delay.filtre);
+    d->setProperty ("saturation", delay.saturation);
+    racine->setProperty ("delay", juce::var (d));
+
+    auto r = new juce::DynamicObject();
+    r->setProperty ("taille", reverb.taille);
+    r->setProperty ("duree", reverb.duree);
+    r->setProperty ("couleur", reverb.couleur);
+    racine->setProperty ("reverb", juce::var (r));
+    racine->setProperty ("compressionDeSortie", compressionDeSortie);
     racine->setProperty ("prochaineGraine", (juce::int64) prochaineGraine);
 
     auto var = new juce::DynamicObject();
@@ -142,6 +156,15 @@ juce::var Morceau::versJson() const
         objet->setProperty ("mute", p.mute);
         objet->setProperty ("solo", p.solo);
         objet->setProperty ("swing", p.swing ? juce::var (*p.swing) : juce::var());
+        objet->setProperty ("envoiDelayDb", p.envoiDelayDb);
+        objet->setProperty ("envoiReverbDb", p.envoiReverbDb);
+
+        juce::Array<juce::var> effets;
+
+        for (auto& e : p.effets)
+            effets.add (e ? e->versJson() : juce::var());
+
+        objet->setProperty ("effets", effets);
 
         if (p.estUneBatterie())
             objet->setProperty ("kit", p.kit.versJson());
@@ -309,6 +332,23 @@ Morceau Morceau::depuisJson (const juce::var& v)
 
     if (const auto g = v.getProperty ("gamme", {}); g.isObject())
         m.gamme = Gamme::depuisJson (g);
+
+    if (const auto d = v.getProperty ("delay", {}); d.isObject())
+    {
+        m.delay.division = juce::jlimit (0, (int) DelayDub::divisions.size() - 1, (int) d.getProperty ("division", 0));
+        m.delay.retour = juce::jlimit (0.0f, 1.2f, (float) d.getProperty ("retour", 0.45f));
+        m.delay.filtre = juce::jlimit (0.0f, 1.0f, (float) d.getProperty ("filtre", 0.35f));
+        m.delay.saturation = juce::jlimit (0.0f, 1.0f, (float) d.getProperty ("saturation", 0.2f));
+    }
+
+    if (const auto r = v.getProperty ("reverb", {}); r.isObject())
+    {
+        m.reverb.taille = juce::jlimit (0.0f, 1.0f, (float) r.getProperty ("taille", 0.5f));
+        m.reverb.duree = juce::jlimit (0.0f, 1.0f, (float) r.getProperty ("duree", 0.5f));
+        m.reverb.couleur = juce::jlimit (0.0f, 1.0f, (float) r.getProperty ("couleur", 0.5f));
+    }
+
+    m.compressionDeSortie = juce::jlimit (0.0f, 1.0f, (float) v.getProperty ("compressionDeSortie", 0.3f));
     m.prochaineGraine = (juce::uint32) (juce::int64) v.getProperty ("prochaineGraine", 2);
 
     if (const auto var = v.getProperty ("variation", {}); var.isObject())
@@ -334,6 +374,13 @@ Morceau Morceau::depuisJson (const juce::var& v)
             piste.panoramique = juce::jlimit (-1.0f, 1.0f, (float) p.getProperty ("panoramique", 0.0f));
             piste.mute = p.getProperty ("mute", false);
             piste.solo = p.getProperty ("solo", false);
+
+            piste.envoiDelayDb = juce::jlimit (-60.0f, 6.0f, (float) p.getProperty ("envoiDelayDb", -60.0f));
+            piste.envoiReverbDb = juce::jlimit (-60.0f, 6.0f, (float) p.getProperty ("envoiReverbDb", -60.0f));
+
+            if (auto effets = p.getProperty ("effets", {}).getArray())
+                for (int k = 0; k < std::min (3, effets->size()); ++k)
+                    piste.effets[(size_t) k] = Effet::depuisJson ((*effets)[k]);
 
             if (const auto sw = p.getProperty ("swing", {}); ! sw.isVoid())
                 piste.swing = juce::jlimit (0.0f, 0.75f, (float) sw);

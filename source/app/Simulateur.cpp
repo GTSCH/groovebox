@@ -321,7 +321,12 @@ void Simulateur::mouseUp (const juce::MouseEvent&)
     {
         case Genre::pad:        envoyer ({ Evenement::Type::pad, e.numero, 0, false }); break;
         case Genre::bouton:     envoyer ({ Evenement::Type::bouton, e.numero, 0, false }); break;
-        case Genre::bande:      envoyer ({ Evenement::Type::bandeTouchee, 0, 0, false }); break;
+        case Genre::bande:
+            // Comme le vrai Push : la bande revient au centre quand on la lâche
+            positionBande = 8192;
+            envoyer ({ Evenement::Type::bandeDeplacee, 0, positionBande, false });
+            envoyer ({ Evenement::Type::bandeTouchee, 0, 0, false });
+            break;
         case Genre::encodeur:
             encodeursTouches[(size_t) e.numero] = false;
             envoyer ({ Evenement::Type::encodeurTouche, e.numero, 0, false });

@@ -5,6 +5,7 @@
 #include "Generateurs.h"
 #include "Gamme.h"
 #include "Melodies.h"
+#include "Effets.h"
 
 namespace groovebox
 {
@@ -71,6 +72,8 @@ struct Piste
     bool mute = false, solo = false;
     std::optional<float> swing;     ///< Propre à la piste ; sinon, le swing du morceau
     Kit kit;
+    std::array<std::optional<Effet>, 3> effets;     ///< Effets d'insertion
+    float envoiDelayDb = -60.0f, envoiReverbDb = -60.0f;  ///< Envois vers les effets de départ (-60 : coupé)
     juce::String sonDeSynthe;       ///< Son de Surge XT (pistes de synthé), par son nom
     std::array<float, 8> macros { 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };                        ///< Utilisé quand le son est Batterie ou Percussions
 
@@ -108,6 +111,9 @@ struct Morceau
     float volumeGeneralDb = 0.0f;     ///< Volume de la sortie principale (sono), sans effet sur le casque
     Calage calage = Calage::mesure;
     Gamme gamme;                      ///< Do mineur par défaut, comme la démo
+    DelayDub delay;
+    Reverberation reverb;
+    float compressionDeSortie = 0.3f; ///< Compresseur léger de la sortie principale, avant le limiteur
     float swing = 0.0f;               ///< 0 à 0,75 : retard des double-croches du contretemps (encodeur Swing)
     Variation variation;              ///< Réglages de « dupliquer et varier »
     juce::uint32 prochaineGraine = 2; ///< Graine donnée à la prochaine variation

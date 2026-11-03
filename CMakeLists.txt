@@ -28,6 +28,7 @@ set (SOURCES_MOTEUR
     source/modele/Generateurs.cpp
     source/modele/Gamme.cpp
     source/modele/Melodies.cpp
+    source/modele/Effets.cpp
     source/moteur/BipPlugin.cpp
     source/moteur/ClicPlugin.cpp
     source/moteur/InstrumentProvisoire.cpp
@@ -36,6 +37,7 @@ set (SOURCES_MOTEUR
     source/moteur/FabriqueDeSons.cpp
     source/moteur/Surge.cpp
     source/moteur/SonsDeSynthe.cpp
+    source/moteur/EffetsMaison.cpp
     source/moteur/Moteur.cpp
     source/moteur/Reglages.cpp
     source/push/Controles.cpp
@@ -52,7 +54,8 @@ set (DEFINITIONS_COMMUNES
     JUCE_WEB_BROWSER=0
     JUCE_STRICT_REFCOUNTEDPOINTER=1
     JUCE_DISPLAY_SPLASH_SCREEN=0
-    TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH=1)
+    TRACKTION_ENABLE_TIMESTRETCH_SOUNDTOUCH=1
+    TRACKTION_AIR_WINDOWS=1)
 
 set (MODULES_COMMUNS
     tracktion::tracktion_core

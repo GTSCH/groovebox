@@ -5,8 +5,8 @@ namespace groovebox
 
 namespace
 {
-    // Bande tactile : LED gérées par le Push, un point (pas une barre), sans retour automatique au centre
-    constexpr int configurationDeLaBande = 0b0001000;
+    // Bande tactile : LED gérées par le Push, un point, retour automatique au centre (le filtre global redevient neutre)
+    constexpr int configurationDeLaBande = 0b1101000;
 }
 
 PushMidi::PushMidi (Surface& s)  : surface (s)

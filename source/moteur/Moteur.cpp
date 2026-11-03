@@ -38,10 +38,14 @@ namespace
         for (auto& p : m.pistes)
         {
             p.volumeDb = juce::jlimit (-60.0f, 6.0f, p.volumeDb);
+            p.envoiDelayDb = juce::jlimit (-60.0f, 6.0f, p.envoiDelayDb);
+            p.envoiReverbDb = juce::jlimit (-60.0f, 6.0f, p.envoiReverbDb);
             p.panoramique = juce::jlimit (-1.0f, 1.0f, p.panoramique);
         }
 
         m.assurerScenes (8);
+        m.delay.retour = juce::jlimit (0.0f, 1.2f, m.delay.retour);
+        m.delay.division = juce::jlimit (0, (int) DelayDub::divisions.size() - 1, m.delay.division);
 
         // Pistes de synthé : un son de Surge par défaut, avec ses macros de départ
         for (auto& p : m.pistes)
@@ -71,6 +75,13 @@ Moteur::Moteur (te::Engine& e, Morceau depart, BanqueDeSons* banqueFournie)  : e
     engine.getPluginManager().createBuiltInType<ClicPlugin>();
     engine.getPluginManager().createBuiltInType<InstrumentProvisoire>();
     engine.getPluginManager().createBuiltInType<BatteriePlugin>();
+    engine.getPluginManager().createBuiltInType<FiltrePlugin>();
+    engine.getPluginManager().createBuiltInType<SaturationPlugin>();
+    engine.getPluginManager().createBuiltInType<DelayDubPlugin>();
+    engine.getPluginManager().createBuiltInType<LimiteurPlugin>();
+    engine.getPluginManager().createBuiltInType<DistorsionPlugin>();
+    engine.getPluginManager().createBuiltInType<PunchPlugin>();
+    engine.getPluginManager().createBuiltInType<GravePlugin>();
     contraindre (morceau);
 
     edit = te::Edit::createSingleTrackEdit (engine);
@@ -122,7 +133,45 @@ Moteur::Moteur (te::Engine& e, Morceau depart, BanqueDeSons* banqueFournie)  : e
             pm.volume = ajouterPlugin<te::VolumeAndPanPlugin> (*pm.dossier, 0);
 
         pm.envoiCasque = ajouterPlugin<te::AuxSendPlugin> (*pm.dossier, -1);
+
+        // Envois vers les effets de départ : bus 1 (delay dub) et bus 2 (réverbération)
+        pm.envoiDelay = ajouterPlugin<te::AuxSendPlugin> (*pm.dossier, -1);
+        pm.envoiDelay->busNumber = 1;
+        pm.envoiReverb = ajouterPlugin<te::AuxSendPlugin> (*pm.dossier, -1);
+        pm.envoiReverb->busNumber = 2;
     }
+
+    // Retours des effets de départ : ils vont à la sono et, par le bus 0, au casque du batteur
+    auto retour = [this, &precedente] (const juce::String& nom, int bus)
+    {
+        auto piste = edit->insertNewAudioTrack (te::TrackInsertPoint (nullptr, precedente), nullptr);
+        piste->setName (nom);
+        precedente = piste.get();
+        auto r = ajouterPlugin<te::AuxReturnPlugin> (*piste, 0);
+        r->busNumber = bus;
+        return piste.get();
+    };
+
+    pisteDelay = retour ("Delay dub", 1);
+    delay = ajouterPlugin<DelayDubPlugin> (*pisteDelay, 1);
+    envoisCasqueDesRetours[0] = ajouterPlugin<te::AuxSendPlugin> (*pisteDelay, -1);
+    pisteReverb = retour ("Réverbération"_fr, 2);
+    reverb = ajouterPlugin<te::ReverbPlugin> (*pisteReverb, 1);
+    envoisCasqueDesRetours[1] = ajouterPlugin<te::AuxSendPlugin> (*pisteReverb, -1);
+
+    // Sortie principale : filtre global (bande tactile), puis compresseur léger et limiteur ; le casque a aussi son limiteur
+    auto ajouterALaSortie = [this] (const char* type)
+    {
+        auto plugin = edit->getPluginCache().createNewPlugin (type, {});
+        edit->getMasterPluginList().insertPlugin (plugin, -1, nullptr);
+        return plugin.get();
+    };
+
+    filtreDeSortie = dynamic_cast<FiltrePlugin*> (ajouterALaSortie (FiltrePlugin::xmlTypeName));
+    filtreDeSortie->resonance = 0.25f;
+    limiteurDeSortie = dynamic_cast<LimiteurPlugin*> (ajouterALaSortie (LimiteurPlugin::xmlTypeName));
+    limiteurDuCasque = ajouterPlugin<LimiteurPlugin> (*pisteCasque, -1);
+    limiteurDuCasque->compression = 0.0f;
 
     if (auto tempo = edit->tempoSequence.getTempo (0))
         tempo->setCurve (1.0f);
@@ -132,6 +181,7 @@ Moteur::Moteur (te::Engine& e, Morceau depart, BanqueDeSons* banqueFournie)  : e
     appliquerReglagesDuClic();
     appliquerPistes (morceau, true);
     appliquerCases (morceau, true);
+    appliquerEffetsDeDepart();
     appliquerRoutage();
     engine.getDeviceManager().addChangeListener (this);
 
@@ -215,6 +265,7 @@ void Moteur::appliquerDifferences (const Morceau& ancien)
 
     appliquerReglagesDuClic();
     appliquerPistes (ancien, false);
+    appliquerEffetsDeDepart();
 
     if (morceau.clic.ecouteSurMac != ancien.clic.ecouteSurMac)
         appliquerRoutage();
@@ -236,6 +287,7 @@ void Moteur::chargerMorceau (const Morceau& nouveau)
     appliquerReglagesDuClic();
     appliquerPistes (ancien, true);
     appliquerCases (ancien, true);
+    appliquerEffetsDeDepart();
     appliquerRoutage();
 
     if (surChangementDeMorceau)
@@ -347,6 +399,10 @@ void Moteur::appliquerPistes (const Morceau& ancien, bool tout)
                 pm.batteries[(size_t) k]->appliquerKit (p.kit, *banque);
         }
 
+        appliquerEffets (i, ancien, tout);
+        pm.envoiDelay->setGainDb (momentanes[(size_t) i] ? 0.0f : p.envoiDelayDb);
+        pm.envoiReverb->setGainDb (p.envoiReverbDb);
+
         pm.volume->setVolumeDb (p.volumeDb);
         pm.volume->setPan (p.panoramique);
         pm.dossier->setMute (p.mute);
@@ -451,6 +507,161 @@ void Moteur::appliquerCase (int piste, int scene)
     }
 
     existant->setLoopRangeBeats ({ te::BeatPosition(), te::BeatDuration::fromBeats (longueur) });
+}
+
+namespace
+{
+    void reglerParNom (te::Plugin& plugin, const juce::String& nom, float valeur)
+    {
+        for (auto* p : plugin.getAutomatableParameters())
+            if (p->getParameterName() == nom)
+                p->setParameter (juce::jlimit (0.0f, 1.0f, valeur), juce::sendNotificationSync);
+    }
+
+    const char* typeDuPlugin (TypeEffet t)
+    {
+        switch (t)
+        {
+            case TypeEffet::filtre:         return FiltrePlugin::xmlTypeName;
+            case TypeEffet::saturation:     return SaturationPlugin::xmlTypeName;
+            case TypeEffet::lofi:           return te::AirWindowsDeRez2::xmlTypeName;
+            case TypeEffet::compresseur:    return te::AirWindowsButterComp2::xmlTypeName;
+            case TypeEffet::echo:           return te::AirWindowsTapeDelay::xmlTypeName;
+            case TypeEffet::chorus:         return te::AirWindowsChorusEnsemble::xmlTypeName;
+            case TypeEffet::distorsion:     return DistorsionPlugin::xmlTypeName;
+            case TypeEffet::punch:          return PunchPlugin::xmlTypeName;
+            case TypeEffet::grave:          return GravePlugin::xmlTypeName;
+        }
+
+        return FiltrePlugin::xmlTypeName;
+    }
+}
+
+void Moteur::appliquerEffets (int i, const Morceau& ancien, bool tout)
+{
+    auto& pm = pistesMoteur[(size_t) i];
+    const auto& p = morceau.pistes[(size_t) i];
+    juce::ignoreUnused (ancien, tout);
+
+    for (int k = 0; k < 3; ++k)
+    {
+        const auto& voulu = p.effets[(size_t) k];
+        auto& plugin = pm.effets[(size_t) k];
+
+        // Type changé (ou effet retiré) : on remplace le plugin de l'emplacement
+        if (! voulu || ! pm.typesDesEffets[(size_t) k] || *pm.typesDesEffets[(size_t) k] != voulu->type)
+        {
+            if (plugin != nullptr)
+            {
+                plugin->deleteFromParent();
+                plugin = nullptr;
+            }
+
+            pm.typesDesEffets[(size_t) k].reset();
+
+            if (voulu)
+            {
+                // Les effets se rangent dans l'ordre des emplacements, avant le volume de la piste
+                int position = 0;
+
+                for (int j = 0; j < k; ++j)
+                    position += pm.effets[(size_t) j] != nullptr ? 1 : 0;
+
+                plugin = edit->getPluginCache().createNewPlugin (typeDuPlugin (voulu->type), {});
+                pm.dossier->pluginList.insertPlugin (plugin, position, nullptr);
+                pm.typesDesEffets[(size_t) k] = voulu->type;
+            }
+        }
+
+        if (! voulu || plugin == nullptr)
+            continue;
+
+        const auto& r = voulu->reglages;
+
+        switch (voulu->type)
+        {
+            case TypeEffet::filtre:
+                if (auto f = dynamic_cast<FiltrePlugin*> (plugin.get())) { f->position = r[0]; f->resonance = r[1]; f->actif = voulu->actif; }
+                break;
+
+            case TypeEffet::saturation:
+                if (auto s = dynamic_cast<SaturationPlugin*> (plugin.get())) { s->quantite = r[0]; s->couleur = r[1]; s->melange = r[2]; s->actif = voulu->actif; }
+                break;
+
+            case TypeEffet::lofi:
+                reglerParNom (*plugin, "Rez", 1.0f - 0.92f * r[0]);
+                reglerParNom (*plugin, "Rate", 1.0f - 0.95f * r[1]);
+                reglerParNom (*plugin, "Dry/Wet", r[2]);
+                plugin->setEnabled (voulu->actif);
+                break;
+
+            case TypeEffet::compresseur:
+                reglerParNom (*plugin, "Compress", r[0]);
+                reglerParNom (*plugin, "Output", 0.5f);
+                reglerParNom (*plugin, "Dry/Wet", 1.0f);
+                plugin->setEnabled (voulu->actif);
+                break;
+
+            case TypeEffet::echo:
+                reglerParNom (*plugin, "Dry", 1.0f);
+                reglerParNom (*plugin, "Wet", r[2]);
+                reglerParNom (*plugin, "Delay", 0.05f + 0.95f * r[0]);
+                reglerParNom (*plugin, "Feedbak", 0.7f * r[1]);    // l'écho court reste sage ; c'est le delay dub qui s'emballe
+                plugin->setEnabled (voulu->actif);
+                break;
+
+            case TypeEffet::distorsion:
+                if (auto e = dynamic_cast<DistorsionPlugin*> (plugin.get())) { e->gain = r[0]; e->durete = r[1]; e->tonalite = r[2]; e->melange = r[3]; e->actif = voulu->actif; }
+                break;
+
+            case TypeEffet::punch:
+                if (auto e = dynamic_cast<PunchPlugin*> (plugin.get())) { e->attaque = r[0]; e->maintien = r[1]; e->puissance = r[2]; e->actif = voulu->actif; }
+                break;
+
+            case TypeEffet::grave:
+                if (auto e = dynamic_cast<GravePlugin*> (plugin.get())) { e->quantite = r[0]; e->frequenceDuGrave = r[1]; e->saturation = r[2]; e->actif = voulu->actif; }
+                break;
+
+            case TypeEffet::chorus:
+                reglerParNom (*plugin, "Range", r[0]);
+                reglerParNom (*plugin, "Speed", r[1]);
+                reglerParNom (*plugin, "Dry/Wet", r[2]);
+                plugin->setEnabled (voulu->actif);
+                break;
+        }
+    }
+}
+
+void Moteur::appliquerEffetsDeDepart()
+{
+    const auto& d = morceau.delay;
+    delay->tempo = (float) morceau.tempo;
+    delay->noires = (float) DelayDub::divisions[(size_t) juce::jlimit (0, (int) DelayDub::divisions.size() - 1, d.division)];
+    delay->retour = d.retour;
+    delay->filtre = d.filtre;
+    delay->saturation = d.saturation;
+
+    // Réverbération : la taille élargit et allonge, la durée allonge, la couleur éclaircit
+    const auto& r = morceau.reverb;
+    reverb->roomSizeParam->setParameter (juce::jlimit (0.0f, 1.0f, 0.35f + 0.45f * r.duree + 0.18f * r.taille), juce::sendNotificationSync);
+    reverb->widthParam->setParameter (0.4f + 0.6f * r.taille, juce::sendNotificationSync);
+    reverb->dampParam->setParameter (0.9f - 0.85f * r.couleur, juce::sendNotificationSync);
+    reverb->wetParam->setParameter (0.8f, juce::sendNotificationSync);
+    reverb->dryParam->setParameter (0.0f, juce::sendNotificationSync);
+
+    limiteurDeSortie->compression = morceau.compressionDeSortie;
+}
+
+void Moteur::envoiMomentane (int piste, bool tenu)
+{
+    piste = juce::jlimit (0, nombreDePistes - 1, piste);
+    momentanes[(size_t) piste] = tenu;
+    pistesMoteur[(size_t) piste].envoiDelay->setGainDb (tenu ? 0.0f : morceau.pistes[(size_t) piste].envoiDelayDb);
+}
+
+void Moteur::filtreGlobal (float position)
+{
+    filtreDeSortie->position = juce::jlimit (0.0f, 1.0f, position);
 }
 
 bool Moteur::joueAvecSurge (int piste) const
@@ -715,10 +926,16 @@ void Moteur::appliquerTempo()
     // En pleine lecture, le nouveau tempo démarre juste après la position actuelle : la mesure en cours ne saute pas
     const auto maintenant = positionExacte() + te::TimeDuration::fromSeconds (0.05);
     tempos.insertTempo (tempos.toBeats (maintenant), morceau.tempo, 1.0f);
+
+    if (delay != nullptr)
+        delay->tempo = (float) morceau.tempo;
 }
 
 void Moteur::ramenerTempoAUnSeul()
 {
+    if (delay != nullptr)
+        delay->tempo = (float) morceau.tempo;
+
     auto& tempos = edit->tempoSequence;
 
     for (int i = tempos.getNumTempos(); --i > 0;)
@@ -760,6 +977,10 @@ void Moteur::appliquerReglagesDuClic()
     for (auto& pm : pistesMoteur)
         if (pm.envoiCasque != nullptr)
             pm.envoiCasque->setGainDb (morceau.musiqueDansCasqueDb);
+
+    for (auto* e : envoisCasqueDesRetours)
+        if (e != nullptr)
+            e->setGainDb (morceau.musiqueDansCasqueDb);
 
     if (auto volume = edit->getMasterVolumePlugin())
         volume->setVolumeDb (morceau.volumeGeneralDb);
