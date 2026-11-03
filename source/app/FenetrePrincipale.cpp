@@ -4,9 +4,12 @@
 namespace groovebox
 {
 
-FenetrePrincipale::FenetrePrincipale (te::Engine& engine, Moteur& moteur)
+FenetrePrincipale::FenetrePrincipale (te::Engine& engine, Moteur& moteur,
+                                      std::function<void()> ouvrirSimulateur, std::function<juce::String()> etatDuPush)
 {
     pageJeu = new PageJeu (moteur);
+    pageJeu->ouvrirSimulateur = std::move (ouvrirSimulateur);
+    pageJeu->etatDuPush = std::move (etatDuPush);
     onglets.addTab ("Jeu", couleurFond, pageJeu, true);
     onglets.addTab ("Carte son", couleurFond, new PageCarteSon (engine, moteur), true);
     onglets.setTabBarDepth (40);

@@ -74,6 +74,8 @@ void Moteur::modifier (const std::function<void (Morceau&)>& changement)
     nouveau.tempo = juce::jlimit (Morceau::tempoMin, Morceau::tempoMax, nouveau.tempo);
     nouveau.clic.decompte = juce::jlimit (0, 2, nouveau.clic.decompte);
     nouveau.clic.volume = juce::jlimit (0.0f, 1.0f, nouveau.clic.volume);
+    nouveau.musiqueDansCasqueDb = juce::jlimit (-40.0f, 0.0f, nouveau.musiqueDansCasqueDb);
+    nouveau.volumeGeneralDb = juce::jlimit (-40.0f, 0.0f, nouveau.volumeGeneralDb);
 
     if (! nouveau.mesure.estValide() || enLecture())
         nouveau.mesure = morceau.mesure;
@@ -155,6 +157,9 @@ void Moteur::appliquerReglagesDuClic()
     clic->actif = morceau.clic.actif;
     clic->volume = morceau.clic.volume;
     envoiCasque->setGainDb (morceau.musiqueDansCasqueDb);
+
+    if (auto volume = edit->getMasterVolumePlugin())
+        volume->setVolumeDb (morceau.volumeGeneralDb);
 }
 
 //==============================================================================

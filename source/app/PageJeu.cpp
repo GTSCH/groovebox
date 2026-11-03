@@ -36,6 +36,14 @@ PageJeu::PageJeu (Moteur& m)  : moteur (m)
     position.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (position);
 
+    boutonSimulateur.onClick = [this] { if (ouvrirSimulateur) ouvrirSimulateur(); };
+    addAndMakeVisible (boutonSimulateur);
+
+    infoPush.setFont (juce::FontOptions (15.0f));
+    infoPush.setColour (juce::Label::textColourId, couleurDiscret);
+    infoPush.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (infoPush);
+
     aideMesure.setFont (juce::FontOptions (15.0f));
     aideMesure.setColour (juce::Label::textColourId, couleurDiscret);
     addAndMakeVisible (aideMesure);
@@ -117,7 +125,7 @@ PageJeu::PageJeu (Moteur& m)  : moteur (m)
     musiqueDansCasque.onValueChange = [this] { moteur.modifier ([v = (float) musiqueDansCasque.getValue()] (Morceau& m) { m.musiqueDansCasqueDb = v; }); };
     addAndMakeVisible (musiqueDansCasque);
 
-    for (auto* b : { &boutonLecture, &moinsTempo, &plusTempo, &boutonTap })
+    for (auto* b : { &boutonLecture, &moinsTempo, &plusTempo, &boutonTap, &boutonSimulateur })
     {
         b->setWantsKeyboardFocus (false);
         addAndMakeVisible (*b);
@@ -323,6 +331,9 @@ void PageJeu::timerCallback()
 
     position.setText (texte, juce::dontSendNotification);
 
+    if (etatDuPush)
+        infoPush.setText (etatDuPush(), juce::dontSendNotification);
+
     if (p.enLecture != positionAffichee.enLecture || p.temps != positionAffichee.temps || p.mesure != positionAffichee.mesure)
         repaint (zoneDesTemps);
 
@@ -371,6 +382,9 @@ void PageJeu::resized()
 
     auto haut = zone.removeFromTop (70);
     boutonLecture.setBounds (haut.removeFromLeft (170).reduced (0, 4));
+    auto droite = haut.removeFromRight (230);
+    boutonSimulateur.setBounds (droite.removeFromTop (36));
+    infoPush.setBounds (droite.withTrimmedTop (4));
     position.setBounds (haut.withTrimmedLeft (20));
 
     zone.removeFromTop (12);

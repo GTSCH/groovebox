@@ -38,6 +38,7 @@ struct Morceau
     Mesure mesure;
     ReglagesClic clic;
     float musiqueDansCasqueDb = 0.0f; ///< Niveau de la musique dans le casque du batteur
+    float volumeGeneralDb = 0.0f;     ///< Volume de la sortie principale (sono), sans effet sur le casque
     std::vector<Scene> scenes;
 
     juce::var versJson() const;

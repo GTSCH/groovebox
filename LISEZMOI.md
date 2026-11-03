@@ -8,16 +8,19 @@ Groovebox logicielle pour Mac, pilotée au Push 2. Le cahier des charges est dan
 |---|---|
 | 1. Fondations | Faite et validée à l'oreille le 03.11.2026 |
 | 2. Horloge, mesures, clic | Faite et validée à l'oreille le 03.11.2026 |
-| 3 à 11 | Pas commencées |
+| 3. Push 2 | Faite le 03.11.2026, validée avec le simulateur et les essais ; essai sur le vrai Push à faire |
+| 4 à 11 | Pas commencées |
 
 ## Organisation
 
 - `source/modele/` : le morceau (tempo, mesure, groupement, clic), sauvegardé en JSON lisible ; Tap Tempo.
 - `source/moteur/` : le moteur audio (Tracktion Engine), le clic, le bip de test, les réglages. Code commun à l'application et aux essais.
-- `source/app/` : l'application Mac (onglets « Jeu » et « Carte son », point d'entrée).
+- `source/push/` : le Push 2. `Controles` (numéros des boutons, lecture des messages, commandes sysex), `Palette` (8 couleurs de piste), `Surface` (état partagé entre le Push et le simulateur), `PushMidi` (port User), `EcranPush` (écran par USB, fil dédié à 60 images par seconde), `Pilote` (ce que fait chaque contrôle, LED, dessin de l'écran).
+- `source/app/` : l'application Mac (onglets « Jeu » et « Carte son », simulateur du Push dans une fenêtre à part, point d'entrée).
 - `source/Texte.h` : écrire `"Décompte"_fr` pour tout texte accentué dans le code, sinon JUCE lit les accents de travers.
 - `essais/` : essais automatiques, avec une carte son simulée (rien ne sort des haut-parleurs).
 - `externe/tracktion_engine/` : Tracktion Engine v3.2.0, avec JUCE 8.0.6 (sous-module git, figé sur cette version).
+- `externe/libusb/` : libusb 1.0.29, compilée avec le projet (réglages macOS fournis par libusb dans `Xcode/config.h`).
 - `scripts/construire.sh` : compile, lance les essais, installe dans /Applications.
 
 Outils de compilation : CMake et Ninja dans `~/Code/.outils-groovebox` (pas besoin de Xcode, seulement des outils en ligne de commande d'Apple).
@@ -52,4 +55,6 @@ Fait tourner le moteur 60 secondes avec les bips actifs mais muets, puis écrit 
 - Changer le tempo en pleine lecture ajoute un point de tempo juste après la position actuelle : la mesure ne saute pas. À l'arrêt, on revient à un seul tempo.
 - Le clic est un clip MIDI d'une mesure, en boucle, joué par `ClicPlugin`. Le casque (3-4) reçoit le clic et une copie de la musique (envoi et retour du bus 0). Sans sorties 3-4, il se tait, sauf « écoute sur le Mac », qui envoie le clic seul sur 1-2.
 - Si un bloc audio prend plus de 98 % du temps disponible, le moteur rend un bloc de silence et prend un bloc de retard. Les essais désactivent cette sécurité (le calcul y est hors temps réel) ; en concert, c'est la marge de calcul qui compte (étape 11).
-- Licences : Tracktion Engine GPL v3, JUCE AGPL v3. Usage personnel, aucune contrainte.
+- Push 2 : seuls les messages documentés par Ableton (manuel « Push 2 MIDI and Display Interface »). À la connexion : mode User, palette (entrées 64 à 95 seulement), bande tactile ; à la fermeture : LED éteintes et retour au mode Live. Ableton Live doit être fermé (il garde l'écran).
+- Le simulateur ne reçoit pas les clics quand sa fenêtre est en arrière-plan sous le contrôle d'écran de Claude : pour l'essayer, prendre la main à l'écran (clic réel).
+- Licences : libusb LGPL 2.1 ; Tracktion Engine GPL v3, JUCE AGPL v3. Usage personnel, aucune contrainte.

@@ -1,3 +1,6 @@
 [submodule "externe/tracktion_engine"]
 	path = externe/tracktion_engine
 	url = https://github.com/Tracktion/tracktion_engine.git
+[submodule "externe/libusb"]
+	path = externe/libusb
+	url = https://github.com/libusb/libusb.git

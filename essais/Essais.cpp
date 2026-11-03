@@ -5,6 +5,10 @@
 #include "moteur/Moteur.h"
 #include "moteur/Reglages.h"
 #include "modele/TapTempo.h"
+#include "push/Pilote.h"
+#include "push/EcranPush.h"
+#include "push/PushMidi.h"
+#include "app/Simulateur.h"
 
 namespace groovebox
 {
@@ -650,9 +654,267 @@ public:
     }
 };
 
+
+//==============================================================================
+class EssaisPush  : public juce::UnitTest
+{
+public:
+    EssaisPush()  : juce::UnitTest ("Push 2", "groovebox") {}
+
+    struct ClientEssai  : public ClientSurface
+    {
+        void afficher (const EtatSurface& e, const juce::Image& i) override     { etat = e; ecran = i; ++nombre; }
+        EtatSurface etat;
+        juce::Image ecran;
+        int nombre = 0;
+    };
+
+    static juce::String octets (const juce::MidiMessage& m)
+    {
+        return juce::String::toHexString (m.getRawData(), m.getRawDataSize()).toUpperCase().removeCharacters (" ");
+    }
+
+    void runTest() override
+    {
+        using T = Evenement::Type;
+
+        beginTest ("Lecture des messages du Push");
+        {
+            auto lire = [] (const juce::MidiMessage& m) { return lireMessage (m).value_or (Evenement { T::bouton, -1, -1, false }); };
+
+            expect (lire (juce::MidiMessage::noteOn (1, 36, (juce::uint8) 100)) == Evenement { T::pad, 0, 100, true }, "pad en bas à gauche"_fr);
+            const auto haut = lire (juce::MidiMessage::noteOn (1, 99, (juce::uint8) 5));
+            expect (haut.type == T::pad && haut.ligne() == 7 && haut.colonne() == 7, "pad en haut à droite"_fr);
+            expect (lire (juce::MidiMessage::noteOff (1, 50)) == Evenement { T::pad, 14, 0, false }, "pad relâché"_fr);
+            expect (lire (juce::MidiMessage::controllerEvent (1, 71, 1)) == Evenement { T::encodeurTourne, 0, 1, false });
+            expect (lire (juce::MidiMessage::controllerEvent (1, 78, 20)) == Evenement { T::encodeurTourne, 7, 20, false });
+            expect (lire (juce::MidiMessage::controllerEvent (1, 14, 127)) == Evenement { T::encodeurTourne, (int) Encodeur::tempo, -1, false });
+            expect (lire (juce::MidiMessage::controllerEvent (1, 79, 124)) == Evenement { T::encodeurTourne, (int) Encodeur::master, -4, false });
+            expect (lire (juce::MidiMessage::controllerEvent (1, 15, 64)) == Evenement { T::encodeurTourne, (int) Encodeur::swing, -64, false });
+            expect (lire (juce::MidiMessage::noteOn (1, 10, (juce::uint8) 127)) == Evenement { T::encodeurTouche, (int) Encodeur::tempo, 127, true });
+            expect (lire (juce::MidiMessage::noteOn (1, 0, (juce::uint8) 0)) == Evenement { T::encodeurTouche, 0, 0, false });
+            expect (lire (juce::MidiMessage::noteOn (1, 12, (juce::uint8) 127)) == Evenement { T::bandeTouchee, 0, 127, true });
+            expect (lire (juce::MidiMessage::controllerEvent (1, 85, 127)) == Evenement { T::bouton, 85, 1, true }, "Play appuyé"_fr);
+            expect (lire (juce::MidiMessage::controllerEvent (1, 85, 0)) == Evenement { T::bouton, 85, 0, false }, "Play relâché"_fr);
+            expect (lire (juce::MidiMessage::pitchWheel (1, 16383)) == Evenement { T::bandeDeplacee, 0, 16383, false });
+        }
+
+        beginTest ("Chaque contrôle du simulateur produit le message du vrai Push");
+        {
+            int pads = 0, boutons = 0, encodeurs = 0;
+            std::set<int> numerosDeBoutons;
+
+            for (auto& e : Simulateur::plan())
+            {
+                using G = Simulateur::Element::Genre;
+                Evenement ev;
+
+                if (e.genre == G::pad)              { ev = { T::pad, e.numero, 90, true }; ++pads; }
+                else if (e.genre == G::bouton)      { ev = { T::bouton, e.numero, 1, true }; ++boutons; numerosDeBoutons.insert (e.numero); }
+                else if (e.genre == G::encodeur)    { ev = { T::encodeurTourne, e.numero, -3, false }; ++encodeurs; }
+                else                                continue;
+
+                const auto relu = lireMessage (messageDe (ev));
+                expect (relu.has_value() && *relu == ev, "contrôle "_fr + juce::String (e.numero));
+
+                if (e.genre == G::bouton)
+                    expect (! nomDuBouton (e.numero).startsWith ("Contrôle"_fr), "bouton sans nom : "_fr + juce::String (e.numero));
+            }
+
+            expectEquals (pads, 64);
+            expectEquals (boutons, 65, "boutons du Push 2"_fr);
+            expectEquals ((int) numerosDeBoutons.size(), 65, "chaque bouton a son propre numéro"_fr);
+            expectEquals (encodeurs, 11);
+        }
+
+        beginTest ("Messages des LED : seules les différences partent");
+        {
+            EtatSurface avant, apres;
+            apres.pads[0] = palette::indexDePiste (2, 3);
+            apres.boutons[(size_t) Bouton::play] = palette::vert;
+
+            const auto messages = apres.messagesDepuis (avant);
+            expectEquals ((int) messages.size(), 2);
+            expectEquals (octets (messages[0]), juce::String ("90244B"), "pad 36 : couleur 75"_fr);
+            expectEquals (octets (messages[1]), juce::String ("B0557E"), "Play en vert"_fr);
+            expectEquals ((int) apres.tousLesMessages().size(), 64 + 128);
+            expect (apres.messagesDepuis (apres).empty());
+        }
+
+        beginTest ("Commandes système exclusives, comme dans le manuel d'Ableton"_fr);
+        {
+            expectEquals (octets (sysex::modeMidi (1)), juce::String ("F000211D01010A01F7"));
+            expectEquals (octets (sysex::entreeDePalette (125, juce::Colour (0, 0, 255), 126)), juce::String ("F000211D0101037D000000007F017E00F7"));
+            expectEquals (octets (sysex::reappliquerPalette()), juce::String ("F000211D010105F7"));
+            expectEquals (octets (sysex::configurationBande (0x68)), juce::String ("F000211D01011768F7"));
+            expectEquals ((int) palette::entreesProgrammees().size(), 32);
+
+            for (auto& [index, couleur] : palette::entreesProgrammees())
+                expect (index >= 64 && index < 96, "les entrées 16, 48 et 122 à 127 restent celles d'Ableton"_fr);
+        }
+
+        beginTest ("Format de l'écran : couleurs, lignes de 2048 octets, brouillage"_fr);
+        {
+            expectEquals ((int) formatEcran::pixel (juce::Colours::white), 0xFFFF);
+            expectEquals ((int) formatEcran::pixel (juce::Colour (255, 0, 0)), 0x001F);
+            expectEquals ((int) formatEcran::pixel (juce::Colour (0, 255, 0)), 0x07E0);
+            expectEquals ((int) formatEcran::pixel (juce::Colour (0, 0, 255)), 0xF800);
+
+            juce::Image image (juce::Image::RGB, 960, 160, true);
+            image.setPixelAt (0, 0, juce::Colour (255, 0, 0));
+            image.setPixelAt (959, 159, juce::Colours::white);
+            std::vector<juce::uint8> tampon ((size_t) formatEcran::tailleImage);
+            formatEcran::convertir (image, tampon.data());
+
+            expectEquals ((int) tampon.size(), 160 * 2048);
+            expectEquals ((int) tampon[0], 0x1F ^ 0xE7, "rouge, octet faible d'abord"_fr);
+            expectEquals ((int) tampon[1], 0x00 ^ 0xF3);
+            expectEquals ((int) tampon[2], 0xE7, "pixel noir brouillé"_fr);
+            expectEquals ((int) tampon[3], 0xFF);
+            const auto dernier = (size_t) (159 * 2048 + 959 * 2);
+            expectEquals ((int) tampon[dernier], 0xFF ^ 0xE7);
+            expectEquals ((int) tampon[dernier + 1], 0xFF ^ 0xFF);
+            expectEquals ((int) tampon[2048 - 1], 0xFF, "bourrage brouillé lui aussi"_fr);
+            expectEquals ((int) tampon[1920], 0xE7);
+        }
+
+        auto& engine = *te::Engine::getEngines()[0];
+
+        beginTest ("Dessiner et convertir l'écran prend moins de 5 ms");
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine);
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            juce::Image image (juce::Image::RGB, 960, 160, true);
+            std::vector<juce::uint8> tampon ((size_t) formatEcran::tailleImage);
+
+            const auto debut = juce::Time::getMillisecondCounterHiRes();
+
+            for (int i = 0; i < 300; ++i)
+            {
+                pilote.dessinerEcran (image);
+                formatEcran::convertir (image, tampon.data());
+            }
+
+            const auto parImage = (juce::Time::getMillisecondCounterHiRes() - debut) / 300.0;
+            logMessage ("  " + juce::String (parImage, 2) + " ms par image");
+            expect (parImage < 5.0, juce::String (parImage, 2) + " ms par image");
+        }
+
+        beginTest ("Les contrôles du Push règlent le morceau");
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauAvec (120.0, Mesure::standard (4, 4)));
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            auto bouton = [&] (Bouton b) { surface.recevoir ({ T::bouton, (int) b, 1, true }); surface.recevoir ({ T::bouton, (int) b, 0, false }); };
+            auto tourner = [&] (int encodeur, int pas) { surface.recevoir ({ T::encodeurTourne, encodeur, pas, false }); };
+
+            bouton (Bouton::play);
+            expect (moteur.enLecture(), "Play lance la lecture"_fr);
+            expectEquals (pilote.calculerEtat().boutons[(size_t) Bouton::play], palette::vert);
+
+            bouton (Bouton::metronome);
+            expect (! moteur.getMorceau().clic.actif, "Metronome coupe le clic");
+            expectEquals (pilote.calculerEtat().boutons[(size_t) Bouton::metronome], palette::blancFaible);
+            bouton (Bouton::metronome);
+            expect (moteur.getMorceau().clic.actif);
+
+            tourner ((int) Encodeur::tempo, 3);
+            expectEquals (moteur.getMorceau().tempo, 123.0);
+            tourner (0, 4);
+            expectEquals (moteur.getMorceau().tempo, 124.0, "encodeur 1 : un BPM tous les 4 pas"_fr);
+
+            surface.recevoir ({ T::bouton, (int) Bouton::shift, 1, true });
+            tourner ((int) Encodeur::tempo, 5);
+            surface.recevoir ({ T::bouton, (int) Bouton::shift, 0, false });
+            expectWithinAbsoluteError (moteur.getMorceau().tempo, 124.5, 1.0e-9, "Shift : réglage fin"_fr);
+
+            tourner (3, 7);
+            expectEquals (moteur.getMorceau().clic.decompte, 0, "7 pas ne suffisent pas"_fr);
+            tourner (3, 1);
+            expectEquals (moteur.getMorceau().clic.decompte, 1, "8 pas : une valeur de plus");
+            tourner (4, 8);
+            expect (moteur.getMorceau().clic.subdivisions);
+            tourner ((int) Encodeur::master, -8);
+            expectWithinAbsoluteError (moteur.getMorceau().volumeGeneralDb, -2.0f, 1.0e-6f);
+
+            bouton (Bouton::play);
+            expect (! moteur.enLecture(), "Play arrête la lecture"_fr);
+
+            bouton (Bouton::session);
+            expectEquals (pilote.getAnnonce().titre, juce::String ("Session"), "bouton reconnu, annoncé à l'écran"_fr);
+        }
+
+        beginTest ("Les pads s'allument quand on les appuie, plus fort si on frappe fort");
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine);
+            Surface surface;
+            Pilote pilote (moteur, surface);
+
+            expectEquals (pilote.calculerEtat().pads[9], palette::indexDePiste (1, 0));
+            surface.recevoir (Evenement::pad (1, 1, 30));
+            expectEquals (pilote.calculerEtat().pads[9], palette::indexDePiste (1, 1));
+            surface.recevoir (Evenement::pad (1, 1, 127));
+            expectEquals (pilote.calculerEtat().pads[9], palette::indexDePiste (1, 3));
+            surface.recevoir (Evenement::pad (1, 1, 0));
+            expectEquals (pilote.calculerEtat().pads[9], palette::indexDePiste (1, 0));
+        }
+
+        beginTest ("Le Push et le simulateur reçoivent le même état");
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine);
+            Surface surface;
+            ClientEssai push, simulateur;
+            surface.ajouterClient (&push);
+            surface.ajouterClient (&simulateur);
+            Pilote pilote (moteur, surface);
+
+            surface.recevoir (Evenement::pad (0, 5, 100));
+            expect (push.etat == simulateur.etat);
+            expect (push.ecran == simulateur.ecran, "même image d'écran"_fr);
+            expectEquals (push.etat.pads[5], palette::indexDePiste (5, 3));
+            expect (push.nombre > 1);
+
+            surface.retirerClient (&push);
+            surface.retirerClient (&simulateur);
+        }
+
+        beginTest ("Sans Push branché, rien ne casse"_fr);
+        {
+            bool pushPresent = false;
+
+            for (auto& d : juce::MidiInput::getAvailableDevices())
+                pushPresent = pushPresent || PushMidi::estUnPortPush (d.name);
+
+            Surface surface;
+            {
+                EcranPush ecran;
+                PushMidi midi (surface);
+                surface.ajouterClient (&ecran);
+                surface.ajouterClient (&midi);
+                surface.publier (EtatSurface {}, juce::Image (juce::Image::RGB, 960, 160, true));
+                laisserTravailler (300);
+
+                if (! pushPresent)
+                    expect (! midi.estConnecte());
+
+                surface.retirerClient (&ecran);
+                surface.retirerClient (&midi);
+            }
+
+            logMessage (pushPresent ? "  (un Push est branché : essai fait avec lui)"_fr : "  (aucun Push branché)"_fr);
+        }
+    }
+};
+
 static EssaisModele essaisModele;
 static EssaisSorties essaisSorties;
 static EssaisHorloge essaisHorloge;
+static EssaisPush essaisPush;
 
 } // namespace groovebox
 

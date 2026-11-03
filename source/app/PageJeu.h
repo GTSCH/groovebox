@@ -12,6 +12,9 @@ class PageJeu  : public juce::Component,
 {
 public:
     explicit PageJeu (Moteur&);
+
+    std::function<void()> ouvrirSimulateur;
+    std::function<juce::String()> etatDuPush;
     ~PageJeu() override;
 
     void paint (juce::Graphics&) override;
@@ -26,7 +29,8 @@ private:
     std::optional<double> tempoEnAttente;
 
     juce::TextButton boutonLecture { "Lecture" };
-    juce::Label position, aideMesure;
+    juce::TextButton boutonSimulateur { "Simulateur du Push" };
+    juce::Label position, aideMesure, infoPush;
 
     juce::Label libelleTempo, libelleMesure, libelleGroupement, libelleClic, libelleCasque;
     juce::TextButton moinsTempo { "−"_fr }, plusTempo { "+" }, boutonTap { "Tap Tempo" };

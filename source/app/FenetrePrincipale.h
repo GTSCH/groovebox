@@ -10,7 +10,7 @@ namespace groovebox
 class FenetrePrincipale  : public juce::Component
 {
 public:
-    FenetrePrincipale (te::Engine&, Moteur&);
+    FenetrePrincipale (te::Engine&, Moteur&, std::function<void()> ouvrirSimulateur, std::function<juce::String()> etatDuPush);
 
     void resized() override;
     bool keyPressed (const juce::KeyPress&) override;

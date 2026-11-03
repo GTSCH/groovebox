@@ -8,6 +8,16 @@ set (CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "" FORCE)
 add_subdirectory (externe/tracktion_engine/modules/juce)
 add_subdirectory (externe/tracktion_engine/modules)
 
+# libusb, pour l'écran du Push (compilée avec le projet, réglages macOS fournis par libusb)
+set (LIBUSB externe/libusb/libusb)
+add_library (libusb_groovebox STATIC
+    ${LIBUSB}/core.c ${LIBUSB}/descriptor.c ${LIBUSB}/hotplug.c ${LIBUSB}/io.c
+    ${LIBUSB}/strerror.c ${LIBUSB}/sync.c
+    ${LIBUSB}/os/darwin_usb.c ${LIBUSB}/os/events_posix.c ${LIBUSB}/os/threads_posix.c)
+target_include_directories (libusb_groovebox PUBLIC ${LIBUSB} PRIVATE externe/libusb/Xcode)
+target_compile_options (libusb_groovebox PRIVATE -w)
+target_link_libraries (libusb_groovebox PUBLIC "-framework IOKit" "-framework CoreFoundation" "-framework Security" objc)
+
 # Code commun à l'application et aux essais
 set (SOURCES_MOTEUR
     source/modele/Mesure.cpp
@@ -15,7 +25,13 @@ set (SOURCES_MOTEUR
     source/moteur/BipPlugin.cpp
     source/moteur/ClicPlugin.cpp
     source/moteur/Moteur.cpp
-    source/moteur/Reglages.cpp)
+    source/moteur/Reglages.cpp
+    source/push/Controles.cpp
+    source/push/Palette.cpp
+    source/push/Surface.cpp
+    source/push/EcranPush.cpp
+    source/push/PushMidi.cpp
+    source/push/Pilote.cpp)
 
 set (DEFINITIONS_COMMUNES
     JUCE_PLUGINHOST_AU=1
@@ -33,7 +49,8 @@ set (MODULES_COMMUNS
     juce::juce_audio_devices
     juce::juce_audio_processors
     juce::juce_audio_utils
-    juce::juce_recommended_config_flags)
+    juce::juce_recommended_config_flags
+    libusb_groovebox)
 
 # Application
 juce_add_gui_app (groovebox
@@ -52,7 +69,8 @@ target_sources (groovebox PRIVATE
     source/app/Main.cpp
     source/app/FenetrePrincipale.cpp
     source/app/PageJeu.cpp
-    source/app/PageCarteSon.cpp)
+    source/app/PageCarteSon.cpp
+    source/app/Simulateur.cpp)
 target_include_directories (groovebox PRIVATE source)
 target_compile_definitions (groovebox PRIVATE ${DEFINITIONS_COMMUNES})
 target_link_libraries (groovebox PRIVATE ${MODULES_COMMUNS})
@@ -63,6 +81,7 @@ juce_generate_juce_header (groovebox_essais)
 target_compile_features (groovebox_essais PRIVATE cxx_std_20)
 target_sources (groovebox_essais PRIVATE
     ${SOURCES_MOTEUR}
+    source/app/Simulateur.cpp
     essais/Essais.cpp)
 target_include_directories (groovebox_essais PRIVATE source)
 target_compile_definitions (groovebox_essais PRIVATE ${DEFINITIONS_COMMUNES} JUCE_MODAL_LOOPS_PERMITTED=1)

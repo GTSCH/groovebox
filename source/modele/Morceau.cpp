@@ -60,6 +60,7 @@ juce::var Morceau::versJson() const
     racine->setProperty ("clic", juce::var (c));
 
     racine->setProperty ("musiqueDansCasqueDb", musiqueDansCasqueDb);
+    racine->setProperty ("volumeGeneralDb", volumeGeneralDb);
 
     juce::Array<juce::var> listeScenes;
 
@@ -94,6 +95,7 @@ Morceau Morceau::depuisJson (const juce::var& v)
     m.clic.ecouteSurMac = c.getProperty ("ecouteSurMac", m.clic.ecouteSurMac);
 
     m.musiqueDansCasqueDb = juce::jlimit (-60.0f, 6.0f, (float) v.getProperty ("musiqueDansCasqueDb", m.musiqueDansCasqueDb));
+    m.volumeGeneralDb = juce::jlimit (-60.0f, 6.0f, (float) v.getProperty ("volumeGeneralDb", m.volumeGeneralDb));
 
     if (auto liste = v.getProperty ("scenes", {}).getArray())
     {

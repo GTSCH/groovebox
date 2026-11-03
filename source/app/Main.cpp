@@ -1,4 +1,8 @@
 #include "FenetrePrincipale.h"
+#include "Simulateur.h"
+#include "push/EcranPush.h"
+#include "push/PushMidi.h"
+#include "push/Pilote.h"
 #include "moteur/Reglages.h"
 
 namespace groovebox
@@ -46,13 +50,18 @@ public:
         if (const auto i = arguments.indexOf ("--diagnostic"); i >= 0)
             lancerDiagnostic (arguments[i + 1].getIntValue());
         else
-            fenetre = std::make_unique<Fenetre> (*engine, *moteur);
+            demarrerLeJeu();
     }
 
     void shutdown() override
     {
         stopTimer();
         fenetre.reset();
+        simulateur.reset();
+        pilote.reset();
+        pushMidi.reset();
+        ecranPush.reset();
+        surface.reset();
         diagnostic.reset();
 
         if (moteur != nullptr)
@@ -76,6 +85,47 @@ public:
 private:
     bool sauvegardeEnAttente = false;
 
+    void demarrerLeJeu()
+    {
+        // Le Push et son simulateur partagent la même surface : ce qu'on fait sur l'un s'allume sur l'autre
+        surface = std::make_unique<Surface>();
+        ecranPush = std::make_unique<EcranPush>();
+        surface->ajouterClient (ecranPush.get());
+        pushMidi = std::make_unique<PushMidi> (*surface);
+        surface->ajouterClient (pushMidi.get());
+        pilote = std::make_unique<Pilote> (*moteur, *surface);
+
+        fenetre = std::make_unique<Fenetre> (*engine, *moteur,
+                                             [this] { ouvrirLeSimulateur(); },
+                                             [this] { return etatDuPush(); });
+    }
+
+    void ouvrirLeSimulateur()
+    {
+        if (simulateur == nullptr)
+            simulateur = std::make_unique<FenetreSimulateur> (*surface);
+
+        simulateur->setVisible (true);
+        simulateur->toFront (true);
+    }
+
+    juce::String etatDuPush() const
+    {
+        if (pushMidi == nullptr)
+            return {};
+
+        if (pushMidi->estConnecte() && ecranPush->estConnecte())
+            return "Push branché"_fr;
+
+        if (ecranPush->estPrisAilleurs())
+            return "Push pris par Ableton Live : ferme Live"_fr;
+
+        if (pushMidi->estConnecte())
+            return "Push branché, écran en attente"_fr;
+
+        return "Push non branché"_fr;
+    }
+
     static juce::File fichierDuMorceau()
     {
         return Reglages::dossierParDefaut().getChildFile ("morceau-en-cours.json");
@@ -97,11 +147,11 @@ private:
 
     struct Fenetre  : public juce::DocumentWindow
     {
-        Fenetre (te::Engine& e, Moteur& m)
+        Fenetre (te::Engine& e, Moteur& m, std::function<void()> ouvrirSimulateur, std::function<juce::String()> etatDuPush)
             : juce::DocumentWindow ("groovebox", juce::Colour (0xff15171c), juce::DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar (true);
-            setContentOwned (new FenetrePrincipale (e, m), true);
+            setContentOwned (new FenetrePrincipale (e, m, std::move (ouvrirSimulateur), std::move (etatDuPush)), true);
             setResizable (true, false);
             centreWithSize (getWidth(), getHeight());
             setVisible (true);
@@ -172,6 +222,11 @@ private:
     std::unique_ptr<juce::FileLogger> journal;
     std::unique_ptr<te::Engine> engine;
     std::unique_ptr<Moteur> moteur;
+    std::unique_ptr<Surface> surface;
+    std::unique_ptr<EcranPush> ecranPush;
+    std::unique_ptr<PushMidi> pushMidi;
+    std::unique_ptr<Pilote> pilote;
+    std::unique_ptr<FenetreSimulateur> simulateur;
     std::unique_ptr<Fenetre> fenetre;
     std::unique_ptr<Diagnostic> diagnostic;
 };
