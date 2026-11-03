@@ -10,7 +10,10 @@ add_subdirectory (externe/tracktion_engine/modules)
 
 # Code commun à l'application et aux essais
 set (SOURCES_MOTEUR
+    source/modele/Mesure.cpp
+    source/modele/Morceau.cpp
     source/moteur/BipPlugin.cpp
+    source/moteur/ClicPlugin.cpp
     source/moteur/Moteur.cpp
     source/moteur/Reglages.cpp)
 
@@ -47,7 +50,9 @@ target_compile_features (groovebox PRIVATE cxx_std_20)
 target_sources (groovebox PRIVATE
     ${SOURCES_MOTEUR}
     source/app/Main.cpp
-    source/app/FenetrePrincipale.cpp)
+    source/app/FenetrePrincipale.cpp
+    source/app/PageJeu.cpp
+    source/app/PageCarteSon.cpp)
 target_include_directories (groovebox PRIVATE source)
 target_compile_definitions (groovebox PRIVATE ${DEFINITIONS_COMMUNES})
 target_link_libraries (groovebox PRIVATE ${MODULES_COMMUNS})
@@ -60,5 +65,5 @@ target_sources (groovebox_essais PRIVATE
     ${SOURCES_MOTEUR}
     essais/Essais.cpp)
 target_include_directories (groovebox_essais PRIVATE source)
-target_compile_definitions (groovebox_essais PRIVATE ${DEFINITIONS_COMMUNES})
+target_compile_definitions (groovebox_essais PRIVATE ${DEFINITIONS_COMMUNES} JUCE_MODAL_LOOPS_PERMITTED=1)
 target_link_libraries (groovebox_essais PRIVATE ${MODULES_COMMUNS})

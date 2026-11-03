@@ -1,43 +1,23 @@
 #pragma once
 
-#include "moteur/Moteur.h"
+#include "PageJeu.h"
+#include "PageCarteSon.h"
 
 namespace groovebox
 {
 
-/** Fenêtre de l'étape 1 : choix de la carte son, sons de test, état du moteur. */
-class FenetrePrincipale  : public juce::Component,
-                           private juce::Timer,
-                           private juce::ChangeListener,
-                           private juce::AudioIODeviceType::Listener
+/** La fenêtre : un onglet « Jeu » et un onglet « Carte son ». Barre d'espace : lecture et arrêt ; T : Tap Tempo. */
+class FenetrePrincipale  : public juce::Component
 {
 public:
     FenetrePrincipale (te::Engine&, Moteur&);
-    ~FenetrePrincipale() override;
 
-    void paint (juce::Graphics&) override;
     void resized() override;
+    bool keyPressed (const juce::KeyPress&) override;
 
 private:
-    te::Engine& engine;
-    Moteur& moteur;
-
-    juce::Label titre, etat, aideCasque;
-    juce::Label libelleSortie, libelleFrequence, libelleTampon;
-    juce::ComboBox choixSortie, choixFrequence, choixTampon;
-    juce::TextButton boutonBip { "Son de test (sorties 1-2)" };
-    juce::TextButton boutonCasque { "Test casque (sorties 3-4)" };
-
-    te::LevelMeasurer::Client mesureNiveau;
-    float niveauAffiche = 0.0f;
-    juce::Rectangle<int> zoneNiveau;
-
-    void mettreAJourBoutons();
-    void mettreAJourChoixCarte();
-    void changerCarte (const std::function<void (juce::AudioDeviceManager::AudioDeviceSetup&)>&);
-    void changeListenerCallback (juce::ChangeBroadcaster*) override       { mettreAJourChoixCarte(); }
-    void audioDeviceListChanged() override                              { mettreAJourChoixCarte(); }
-    void timerCallback() override;
+    juce::TabbedComponent onglets { juce::TabbedButtonBar::TabsAtTop };
+    PageJeu* pageJeu = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FenetrePrincipale)
 };

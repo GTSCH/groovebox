@@ -1,6 +1,6 @@
 #pragma once
 
-#include <JuceHeader.h>
+#include "Texte.h"
 
 namespace groovebox
 {

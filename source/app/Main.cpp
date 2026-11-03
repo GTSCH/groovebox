@@ -10,7 +10,8 @@ struct ComportementMoteur  : public te::EngineBehaviour
     bool autoInitialiseDeviceManager() override     { return false; }
 };
 
-class Application  : public juce::JUCEApplication
+class Application  : public juce::JUCEApplication,
+                     private juce::Timer
 {
 public:
     const juce::String getApplicationName() override       { return "groovebox"; }
@@ -20,7 +21,7 @@ public:
     void initialise (const juce::String& ligneDeCommande) override
     {
         journal.reset (juce::FileLogger::createDefaultAppLogger ("groovebox", "journal.txt",
-                                                                 "groovebox " + getApplicationVersion() + " démarré"));
+                                                                 "groovebox " + getApplicationVersion() + " démarré"_fr));
         juce::Logger::setCurrentLogger (journal.get());
 
         engine = std::make_unique<te::Engine> (std::make_unique<Reglages>(),
@@ -28,7 +29,10 @@ public:
                                                std::make_unique<ComportementMoteur>());
         engine->getDeviceManager().initialise (0, 4);
         appliquerReglagesDeDepart (*engine);
-        moteur = std::make_unique<Moteur> (*engine);
+        // Le morceau en cours est rechargé tel qu'on l'a laissé, et sauvegardé au fil des changements
+        moteur = std::make_unique<Moteur> (*engine, Morceau::charger (fichierDuMorceau()).value_or (Morceau {}));
+        moteur->surChangementDeMorceau = [this] { sauvegardeEnAttente = true; };
+        startTimer (2000);
 
         if (auto carte = engine->getDeviceManager().deviceManager.getCurrentAudioDevice())
             juce::Logger::writeToLog ("Carte son : " + carte->getName() + ", "
@@ -47,8 +51,12 @@ public:
 
     void shutdown() override
     {
+        stopTimer();
         fenetre.reset();
         diagnostic.reset();
+
+        if (moteur != nullptr)
+            sauvegarder();
 
         if (engine != nullptr)
         {
@@ -58,7 +66,7 @@ public:
 
         moteur.reset();
         engine.reset();
-        juce::Logger::writeToLog ("groovebox fermé");
+        juce::Logger::writeToLog ("groovebox fermé"_fr);
         juce::Logger::setCurrentLogger (nullptr);
         journal.reset();
     }
@@ -66,6 +74,27 @@ public:
     void systemRequestedQuit() override                    { quit(); }
 
 private:
+    bool sauvegardeEnAttente = false;
+
+    static juce::File fichierDuMorceau()
+    {
+        return Reglages::dossierParDefaut().getChildFile ("morceau-en-cours.json");
+    }
+
+    void sauvegarder()
+    {
+        sauvegardeEnAttente = false;
+
+        if (! moteur->getMorceau().enregistrer (fichierDuMorceau()))
+            juce::Logger::writeToLog ("Sauvegarde du morceau impossible : " + fichierDuMorceau().getFullPathName());
+    }
+
+    void timerCallback() override
+    {
+        if (sauvegardeEnAttente)
+            sauvegarder();
+    }
+
     struct Fenetre  : public juce::DocumentWindow
     {
         Fenetre (te::Engine& e, Moteur& m)
@@ -76,6 +105,7 @@ private:
             setResizable (true, false);
             centreWithSize (getWidth(), getHeight());
             setVisible (true);
+            getContentComponent()->grabKeyboardFocus();
         }
 
         void closeButtonPressed() override                 { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
@@ -91,6 +121,11 @@ private:
                 moteur.reglerNiveauBip (s, 0.0f);
                 moteur.activerBip (s, true);
             }
+
+            // Lecture avec le clic, muet
+            volumeDeDepart = moteur.getMorceau().clic.volume;
+            moteur.modifier ([] (Morceau& m) { m.clic.volume = 0.0f; });
+            moteur.lancer();
 
             if (auto carte = engine.getDeviceManager().deviceManager.getCurrentAudioDevice())
                 coupuresAuDepart = carte->getXRunCount();
@@ -112,19 +147,21 @@ private:
                 bilan << carte->getName() << ", " << carte->getCurrentSampleRate() << " Hz, tampon "
                       << carte->getCurrentBufferSizeSamples() << ", coupures " << (carte->getXRunCount() - coupuresAuDepart)
                       << ", charge max " << juce::roundToInt (chargeMax * 100.0f) << " %, lecture "
-                      << (moteur.getEdit().getTransport().isPlaying() ? "en cours" : "arrêtée");
+                      << (moteur.enLecture() ? "en cours" : "arrêtée"_fr) << ", mesure " << moteur.getPosition().mesure;
             else
                 bilan << "aucune carte son";
 
             juce::Logger::writeToLog (bilan);
             std::cout << bilan << std::endl;
+            moteur.arreter();
+            moteur.modifier ([v = volumeDeDepart] (Morceau& m) { m.clic.volume = v; });
             juce::JUCEApplication::getInstance()->systemRequestedQuit();
         }
 
         te::Engine& engine;
         Moteur& moteur;
         int restant, coupuresAuDepart = 0;
-        float chargeMax = 0.0f;
+        float chargeMax = 0.0f, volumeDeDepart = 0.8f;
     };
 
     void lancerDiagnostic (int secondes)

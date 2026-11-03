@@ -38,7 +38,7 @@ void appliquerReglagesDeDepart (te::Engine& engine)
     const auto erreur = cartes.setAudioDeviceSetup (reglage, true);
 
     if (erreur.isNotEmpty())
-        juce::Logger::writeToLog ("Réglages de départ impossibles : " + erreur);
+        juce::Logger::writeToLog ("Réglages de départ impossibles : "_fr + erreur);
 
     fichier.setValue ("reglagesDeDepartAppliques", true);
     fichier.saveIfNeeded();
