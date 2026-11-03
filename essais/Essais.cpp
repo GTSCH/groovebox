@@ -766,7 +766,7 @@ public:
             expectEquals ((int) messages.size(), 2);
             expectEquals (octets (messages[0]), juce::String ("90244B"), "pad 36 : couleur 75"_fr);
             expectEquals (octets (messages[1]), juce::String ("B0557E"), "Play en vert"_fr);
-            expectEquals ((int) apres.tousLesMessages().size(), 64 + 128);
+            expectEquals ((int) apres.tousLesMessages().size(), 64 + 128 + 1);     // pads, boutons, réglage de la bande tactile
             expect (apres.messagesDepuis (apres).empty());
         }
 
@@ -3289,6 +3289,198 @@ public:
             bouton (Bouton::scene1);
             expect (! moteur.enchainementDeLaPiste (2).has_value(), "la scène 1 entre en coupe, comme retenu");
             expect (moteur.etatCase (2, 0).departEnAttente);
+        }
+
+        beginTest ("À la main : la scène préparée part en silence, la bande la fait monter"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauDEnchainement();
+            m.scenes[0].clips[0] = Clip { "Kick", 1, { Note { 0.0, 0.25, 36, 110 }, Note { 2.0, 0.25, 36, 110 } } };
+            m.scenes[1].clips[0] = Clip { "Kick et caisse", 1, { Note { 0.0, 0.25, 36, 110 }, Note { 1.0, 0.25, 38, 110 } } };
+            m.scenes[0].clips[2] = clipTenu ("Do", 60);
+            m.scenes[1].clips[2] = clipTenu ("Sol", 67);
+            Moteur moteur (engine, m, &banqueEssai());
+            Enregistrement r;
+            const double ancienne = frequenceDeLaNote (60), nouvelle = frequenceDeLaNote (67);
+
+            moteur.lancerScene (0);
+            r.jusqua (moteur, carte, 2.5);
+            moteur.preparerScene (1, enchainement (TypeEnchainement::fondu, 4));
+            expect (moteur.enchainementALaMain(), "enchaînement à la main préparé"_fr);
+            expectEquals (moteur.sceneALaMain(), 1);
+            expect (moteur.enchainementDeLaPiste (0).has_value(), "à la main, la batterie suit aussi la bande");
+
+            r.jusqua (moteur, carte, 5.0);
+            expect (moteur.etatCase (2, 1).joue, "la nouvelle scène tourne déjà, calée sur la mesure"_fr);
+            expect (r.amplitude (4.3, 5.0, nouvelle) < 0.05f * r.amplitude (4.3, 5.0, ancienne), "mais en silence");
+
+            // La bande monte peu à peu jusqu'au milieu
+            for (int k = 1; k <= 25; ++k)
+            {
+                moteur.melangerALaMain (0.02f * k);
+                r.jusqua (moteur, carte, 5.0 + 0.04 * k);
+            }
+
+            expectEquals (moteur.sceneJouee (0), 1, "la batterie a basculé au milieu de la bande");
+            expect (! moteur.etatCase (0, 0).joue || moteur.enchainementDeLaPiste (0).has_value());
+            r.jusqua (moteur, carte, 7.0);
+            const float a = r.amplitude (6.2, 7.0, ancienne), n = r.amplitude (6.2, 7.0, nouvelle);
+            expect (n > 0.5f * a && a > 0.5f * n, "à mi-bande, les deux s'entendent");
+            expect (moteur.enchainementALaMain(), "rien ne se termine tant qu'on ne va pas au bout");
+
+            for (int k = 26; k <= 50; ++k)
+            {
+                moteur.melangerALaMain (0.02f * k);
+                r.jusqua (moteur, carte, 7.0 + 0.04 * (k - 25));
+            }
+
+            expect (! moteur.enchainementALaMain(), "arrivé en haut : la nouvelle scène prend la main"_fr);
+            expectEquals (moteur.sceneJouee (2), 1);
+            expectEquals (moteur.voixCourante (2), 1);
+            r.jusqua (moteur, carte, 10.0);
+            expect (! moteur.etatCase (2, 0).joue, "l'ancienne s'est arrêtée");
+            expect (r.amplitude (8.5, 10.0, ancienne) < 0.05f * r.amplitude (8.5, 10.0, nouvelle));
+            expect (r.saut (4.0, 10.0) < 1.3f * r.saut (1.5, 4.0) + 0.02f, "pas de saut en bougeant la bande");
+        }
+
+        beginTest ("À la main : redescendre annule, relancer la scène préparée finit seul, une autre scène annule"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauDEnchainement();
+            m.scenes[0].clips[2] = clipTenu ("Do", 60);
+            m.scenes[1].clips[2] = clipTenu ("Sol", 67);
+            m.scenes[2].clips[2] = clipTenu ("Mi", 64);
+            Moteur moteur (engine, m, &banqueEssai());
+            Enregistrement r;
+
+            moteur.lancerScene (0);
+            r.jusqua (moteur, carte, 2.5);
+            moteur.preparerScene (1, enchainement (TypeEnchainement::filtre, 2));
+            r.jusqua (moteur, carte, 4.5);
+            moteur.melangerALaMain (0.4f);
+            r.jusqua (moteur, carte, 5.0);
+            moteur.melangerALaMain (0.0f);
+            expect (! moteur.enchainementALaMain(), "redescendu en bas : annulé"_fr);
+            r.jusqua (moteur, carte, 6.0);
+            expectEquals (moteur.sceneJouee (2), 0);
+            expectEquals (moteur.voixCourante (2), 0);
+            expect (! moteur.etatCase (2, 1).joue);
+            expect (r.rmsMin (5.2, 6.0) > 0.8f * r.rmsMin (1.5, 4.0), "l'ancienne revient à son volume");
+
+            // Bande lâchée à 30 %, puis la scène préparée relancée : le mélange finit seul (2 mesures × 70 % = 2,8 s)
+            moteur.preparerScene (1, enchainement (TypeEnchainement::fondu, 2));
+            r.jusqua (moteur, carte, 8.3);
+            moteur.melangerALaMain (0.3f);
+            r.jusqua (moteur, carte, 8.5);
+            moteur.lancerScene (1);
+            expect (! moteur.enchainementALaMain());
+            const auto e = moteur.enchainementDeLaPiste (2);
+            expect (e && std::abs (e->avancee - 0.3f) < 0.05f, "le mélange reprend là où était la bande"_fr);
+            r.jusqua (moteur, carte, 10.5);
+            expect (moteur.enchainementDeLaPiste (2).has_value(), "encore en route");
+            r.jusqua (moteur, carte, 11.6);
+            expect (! moteur.enchainementDeLaPiste (2).has_value(), "terminé");
+            expectEquals (moteur.sceneJouee (2), 1);
+
+            // Une autre scène pendant le mélange : il s'annule, puis la scène part normalement
+            moteur.preparerScene (0, enchainement (TypeEnchainement::fondu, 2));
+            r.jusqua (moteur, carte, 12.5);
+            moteur.melangerALaMain (0.5f);
+            moteur.lancerScene (2, enchainement (TypeEnchainement::coupe, 1));
+            expect (! moteur.enchainementALaMain());
+            r.jusqua (moteur, carte, 14.5);
+            expectEquals (moteur.sceneJouee (2), 2);
+            expect (! moteur.etatCase (2, 0).joue && ! moteur.etatCase (2, 1).joue);
+        }
+
+        beginTest ("Montée : le filtre et la réverbération grimpent sur la dernière mesure, puis retombent à la bascule"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauDEnchainement();
+            m.scenes[0].clips[1] = Clip { "Do grave", 2, { Note { 0.0, 8.0, 36, 100 } } };
+            m.scenes[1].clips[1] = Clip { "Fa grave", 2, { Note { 0.0, 8.0, 41, 100 } } };
+            Moteur moteur (engine, m, &banqueEssai());
+            Enregistrement r;
+
+            moteur.lancerScene (0);
+            r.jusqua (moteur, carte, 2.5);
+            auto e = enchainement (TypeEnchainement::coupe, 1, 1.0f);
+            e.montee = true;
+            moteur.lancerScene (1, e);
+            expect (moteur.monteeEnCours(), "montée prévue jusqu'à la bascule"_fr);
+            r.jusqua (moteur, carte, 4.0);
+            expect (moteur.monteeEnCours());
+            r.jusqua (moteur, carte, 5.0);
+            expect (! moteur.monteeEnCours(), "montée finie à la bascule"_fr);
+
+            const double grave = frequenceDeLaNote (36);
+            const float avant = r.amplitude (1.2, 2.0, grave);
+            const float finDeMontee = r.amplitude (3.7, 4.05, grave);
+            const float apres = r.amplitude (4.4, 5.0, frequenceDeLaNote (41));
+            logMessage ("  graves avant " + juce::String (avant, 4) + ", fin de montée "_fr + juce::String (finDeMontee, 4) + ", après la bascule "_fr + juce::String (apres, 4));
+            expect (finDeMontee < 0.3f * avant, "en fin de montée, les graves sont filtrés"_fr);
+            expect (apres > 0.5f * avant, "à la bascule, tout revient d'un coup"_fr);
+            // La bascule fait partir une nouvelle note : on la compare au tout premier départ de la basse
+            logMessage ("  saut à la bascule "_fr + juce::String (r.saut (4.0, 4.3), 4) + ", au premier départ "_fr + juce::String (r.saut (0.0, 0.5), 4));
+            expect (r.saut (4.0, 4.3) < 1.3f * r.saut (0.0, 0.5) + 0.01f, "sans craquement");
+
+            // Relancer la scène qu'on quitte n'en fait pas ; une nouvelle scène remplace la montée prévue
+            e.type = TypeEnchainement::fondu;
+            moteur.lancerScene (0, e);
+            expect (moteur.monteeEnCours());
+            moteur.lancerScene (1, e);
+            expect (! moteur.monteeEnCours(), "pas de montée en annulant"_fr);
+        }
+
+        beginTest ("Push : Shift + scène prépare, la bande devient le curseur puis redevient le filtre"_fr);
+        {
+            using T = Evenement::Type;
+            CarteSimulee carte (engine, 2);
+            auto m = morceauDEnchainement();
+            m.scenes[0].clips[2] = clipTenu ("Do", 60);
+            m.scenes[1].clips[2] = clipTenu ("Sol", 67);
+            Moteur moteur (engine, m, &banqueEssai());
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            auto appui = [&] (Bouton b, bool bas) { surface.recevoir ({ T::bouton, (int) b, bas ? 127 : 0, bas }); };
+            auto bouton = [&] (Bouton b) { appui (b, true); appui (b, false); };
+            auto bande = [&] (float x) { surface.recevoir ({ T::bandeDeplacee, 0, juce::roundToInt (x * 16383.0f), false }); };
+
+            bouton (Bouton::scene1);
+            jouerEtAvancer (moteur, carte, (int) (2.5 * uneSeconde));
+            expect (! pilote.calculerEtat().bandeSansRetour);
+
+            appui (Bouton::shift, true);
+            bouton (Bouton::scene2);
+            appui (Bouton::shift, false);
+            expect (moteur.enchainementALaMain(), "Shift + scène : mélange à la main"_fr);
+            expect (pilote.calculerEtat().bandeSansRetour, "la bande ne revient plus au centre");
+
+            const auto messages = pilote.calculerEtat().messagesDepuis (EtatSurface {});
+            expect (std::any_of (messages.begin(), messages.end(), [] (auto& mm) { return mm.isSysEx(); }), "le Push reçoit la nouvelle configuration de la bande");
+
+            jouerEtAvancer (moteur, carte, 2 * uneSeconde);
+            surface.recevoir ({ T::bandeTouchee, 0, 127, true });
+
+            for (int k = 0; k <= 20; ++k)
+            {
+                bande (0.05f * k);
+                jouerEtAvancer (moteur, carte, 1200);
+            }
+
+            expect (! moteur.enchainementALaMain(), "en haut : la nouvelle scène a pris la main");
+            expectEquals (moteur.sceneJouee (2), 1);
+            expect (! pilote.calculerEtat().bandeSansRetour, "la bande redevient le filtre global");
+
+            // Le doigt encore posé en haut ne pousse pas le filtre : il attend qu'on lâche
+            bande (1.0f);
+            auto audio = jouerEtAvancer (moteur, carte, uneSeconde / 2);
+            expect (niveauEfficace (audio, 0, uneSeconde / 4, uneSeconde / 2) > 0.01f, "pas de passe-haut à fond par mégarde");
+            surface.recevoir ({ T::bandeTouchee, 0, 0, false });
+
+            bouton (Bouton::user);
+            surface.recevoir ({ T::encodeurTourne, 4, 8, false });
+            expect (moteur.getMorceau().enchainement.montee, "encodeur 5 : la montée"_fr);
         }
     }
 };

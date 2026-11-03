@@ -96,7 +96,7 @@ public:
         }
 
         if (const auto i = arguments.indexOf ("--diagnostic"); i >= 0)
-            lancerDiagnostic (arguments[i + 1].getIntValue());
+            lancerDiagnostic (arguments[i + 1].getIntValue(), arguments.contains ("--demo"));
         else
             demarrerLeJeu();
     }
@@ -214,7 +214,8 @@ private:
     {
         const auto& nom = moteur->getMorceau().nom;
 
-        if (nom == dossierCourant)
+        // Pendant le diagnostic (qui peut charger la démo), les morceaux enregistrés ne bougent pas
+        if (nom == dossierCourant || diagnosticEnCours)
             return;
 
         if (bibliotheque->renommer (dossierCourant, nom))
@@ -357,13 +358,14 @@ private:
                     juce::Logger::writeToLog ("Diagnostic : coupure à la seconde "_fr + juce::String (secondes - restant + 1));
                 }
 
-            // Toutes les 4 secondes, un fondu d'une mesure vers l'autre scène, batterie comprise : les deux voix calculent ensemble
+            // Toutes les 4 secondes, un fondu d'une mesure avec montée vers l'autre scène, batterie comprise : les deux voix calculent ensemble
             if ((secondes - restant) % 4 == 3 && secondeScene != plusRemplie)
             {
                 Enchainement e;
                 e.type = TypeEnchainement::fondu;
                 e.mesures = 1;
                 e.batterieNette = false;
+                e.montee = true;
                 std::swap (plusRemplie, secondeScene);
                 moteur.lancerScene (plusRemplie, e);
                 ++enchainementsLances;
@@ -399,9 +401,13 @@ private:
         Morceau morceauDeDepart;
     };
 
-    void lancerDiagnostic (int secondes)
+    void lancerDiagnostic (int secondes, bool avecLaDemo)
     {
         diagnosticEnCours = true;   // aucune sauvegarde pendant le diagnostic
+
+        // Avec --demo : la démo, sans toucher aux morceaux enregistrés
+        if (avecLaDemo)
+            moteur->chargerMorceau (morceauDeDemonstration());
         diagnostic = std::make_unique<Diagnostic> (*engine, *moteur, juce::jmax (1, secondes));
     }
 

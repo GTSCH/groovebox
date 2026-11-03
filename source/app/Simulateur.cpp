@@ -130,6 +130,10 @@ Simulateur::~Simulateur()
 
 void Simulateur::afficher (const EtatSurface& nouvelEtat, const juce::Image& image)
 {
+    // Curseur de mélange : il part d'en bas ; filtre global : il revient au centre
+    if (nouvelEtat.bandeSansRetour != etat.bandeSansRetour)
+        positionBande = nouvelEtat.bandeSansRetour ? 0 : 8192;
+
     etat = nouvelEtat;
     ecran = image;
 
@@ -322,9 +326,13 @@ void Simulateur::mouseUp (const juce::MouseEvent&)
         case Genre::pad:        envoyer ({ Evenement::Type::pad, e.numero, 0, false }); break;
         case Genre::bouton:     envoyer ({ Evenement::Type::bouton, e.numero, 0, false }); break;
         case Genre::bande:
-            // Comme le vrai Push : la bande revient au centre quand on la lâche
-            positionBande = 8192;
-            envoyer ({ Evenement::Type::bandeDeplacee, 0, positionBande, false });
+            // Comme le vrai Push : la bande revient au centre quand on la lâche, sauf en curseur de mélange
+            if (! etat.bandeSansRetour)
+            {
+                positionBande = 8192;
+                envoyer ({ Evenement::Type::bandeDeplacee, 0, positionBande, false });
+            }
+
             envoyer ({ Evenement::Type::bandeTouchee, 0, 0, false });
             break;
         case Genre::encodeur:

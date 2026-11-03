@@ -79,9 +79,42 @@ std::pair<double, double> FiltrePlugin::coupures (float p)
     return { bas, haut };
 }
 
+void FiltrePlugin::programmerMontee (double debut, double fin, float cible)
+{
+    const juce::SpinLock::ScopedLockType l (verrouDeLaMontee);
+    montee = { debut, fin, cible, true };
+}
+
+void FiltrePlugin::annulerMontee()
+{
+    const juce::SpinLock::ScopedLockType l (verrouDeLaMontee);
+    montee.active = false;
+}
+
+void FiltrePlugin::applyToBuffer (const te::PluginRenderContext& fc)
+{
+    {
+        const juce::SpinLock::ScopedTryLockType l (verrouDeLaMontee);
+
+        if (l.isLocked())
+            monteeAudio = montee;
+    }
+
+    positionVisee = position.load();
+    const double t = fc.editTime.getStart().inSeconds();
+
+    if (monteeAudio.active && fc.isPlaying && t >= monteeAudio.debut && t < monteeAudio.fin && monteeAudio.fin > monteeAudio.debut)
+    {
+        const auto x = (float) ((t - monteeAudio.debut) / (monteeAudio.fin - monteeAudio.debut));
+        positionVisee += (monteeAudio.cible - positionVisee) * x * x;
+    }
+
+    EffetMaison::applyToBuffer (fc);
+}
+
 void FiltrePlugin::traiter (float& g, float& d)
 {
-    const auto p = lisser (positionLissee, position.load());
+    const auto p = lisser (positionLissee, positionVisee);
     const auto r = lisser (resonanceLissee, resonance.load());
     const auto [coupureBasse, coupureHaute] = coupures (p);
     const float k = 2.0f - 1.85f * r;      // de Q 0,5 à Q 6,7

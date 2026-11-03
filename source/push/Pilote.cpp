@@ -266,6 +266,10 @@ Pilote::Pilote (Moteur& m, Surface& s)  : moteur (m), surface (s)
                             [changerEnchainement] (int pas, bool fin) { changerEnchainement (3, [=] (Enchainement& e) {
                                 e.intensite = juce::jlimit (0.0f, 1.0f, e.intensite + (float) pas * (fin ? 0.002f : 0.01f)); }); }, premier };
 
+    pageEnchainement[4] = { "Montée"_fr, [this] { return moteur.getMorceau().enchainement.montee ? juce::String ("Oui") : juce::String ("Non"); },
+                            [this] { return moteur.getMorceau().enchainement.montee ? 1.0f : 0.0f; },
+                            [this, changerEnchainement] (int pas, bool) { if (auto c = crantsDiscrets (4, pas)) changerEnchainement (4, [c] (Enchainement& e) { e.montee = c > 0; }); }, premier };
+
     // Page d'un effet d'insertion : ses réglages (1 à 4), et l'encodeur 8 pour le sauter
     for (int k = 0; k < 4; ++k)
         pageEffet[(size_t) k] = { {}, [this, k, pourcent] {
@@ -767,12 +771,41 @@ void Pilote::traiter (const Evenement& e)
             break;
 
         case Evenement::Type::bandeTouchee:
+            if (! e.appuye && ignorerLaBande)
+            {
+                ignorerLaBande = false;
+                moteur.filtreGlobal (0.5f);
+            }
             break;
 
         case Evenement::Type::bandeDeplacee:
         {
-            // Filtre global : en bas passe-bas, au milieu neutre, en haut passe-haut
             const auto position = (float) e.valeur / 16383.0f;
+
+            // Enchaînement à la main : la bande mélange, de la scène en cours (en bas) à la nouvelle (en haut)
+            if (moteur.enchainementALaMain())
+            {
+                const int scene = moteur.sceneALaMain();
+                moteur.melangerALaMain (position);
+
+                if (! moteur.enchainementALaMain())
+                {
+                    ignorerLaBande = true;
+                    const auto& scenes = moteur.getMorceau().scenes;
+                    annoncer (position > 0.5f && scene >= 0 && scene < (int) scenes.size() ? scenes[(size_t) scene].nom : juce::String ("Mélange annulé"_fr),
+                              position > 0.5f ? juce::String ("Prend la main") : juce::String ("Retour à la scène en cours"_fr));
+                }
+                else
+                {
+                    annoncer ("Mélange"_fr, juce::String (juce::roundToInt (position * 100.0f)) + " %");
+                }
+                break;
+            }
+
+            if (ignorerLaBande)
+                break;
+
+            // Filtre global : en bas passe-bas, au milieu neutre, en haut passe-haut
             moteur.filtreGlobal (std::abs (position - 0.5f) < 0.02f ? 0.5f : position);
 
             if (std::abs (position - 0.5f) >= 0.02f)
@@ -962,9 +995,31 @@ void Pilote::appuyerScene (int scene)
         return;
     }
 
+    // Shift + scène : enchaînement à la main, la bande tactile devient le curseur de mélange
+    if (shift() && moteur.enLecture())
+    {
+        moteur.preparerScene (scene, page == Page::enchainement ? std::optional (morceau.enchainement) : std::nullopt);
+
+        if (moteur.enchainementALaMain())
+            annoncer ("À la main : "_fr + morceau.scenes[(size_t) scene].nom, "Monte la bande tactile"_fr);
+        else
+            annoncer (morceau.scenes[(size_t) scene].nom, "Rien à mélanger"_fr);
+
+        return;
+    }
+
+    const bool etaitALaMain = moteur.enchainementALaMain();
+
     // Page Enchaînement ouverte : on lance avec ce qu'elle montre ; sinon, avec l'enchaînement de la scène
     const auto e = page == Page::enchainement ? morceau.enchainement : morceau.scenes[(size_t) scene].entree.value_or (morceau.enchainement);
     const bool enchaine = moteur.enLecture() && e.type != TypeEnchainement::coupe;
+    if (etaitALaMain && scene == moteur.sceneALaMain())
+    {
+        moteur.lancerScene (scene, e);
+        annoncer (morceau.scenes[(size_t) scene].nom, "Le mélange finit tout seul"_fr);
+        return;
+    }
+
     moteur.lancerScene (scene, e);
     annoncer ("Scène "_fr + juce::String (scene + 1), morceau.scenes[(size_t) scene].nom + (enchaine ? " (" + decrire (e) + ")" : juce::String()));
 }
@@ -1433,6 +1488,7 @@ EtatSurface Pilote::calculerEtat() const
     blanc (Bouton::scale, page == Page::gamme);
     blanc (Bouton::addDevice, page == Page::ajoutEffet);
     blanc (Bouton::user, page == Page::enchainement || moteur.enchainementEnCours().has_value());
+    etat.bandeSansRetour = moteur.enchainementALaMain();
 
     if (page == Page::mix || page == Page::envoisDelay || page == Page::envoisReverb || page == Page::departs)
     {
@@ -1594,7 +1650,8 @@ void Pilote::dessinerEcran (juce::Image& image) const
             return;
         }
 
-        const auto titre = enchainement->enAttente ? "Au prochain calage"_fr
+        const auto titre = enchainement->aLaMain ? "À la main : bande tactile"_fr
+                         : enchainement->enAttente ? "Au prochain calage"_fr
                          : enchainement->annulation ? "Retour en cours"_fr
                                                     : nomDeLEnchainement (enchainement->type) + " en cours";
         g.drawFittedText (titre, zone.withHeight (28.0f).toNearestInt(), juce::Justification::centred, 1, 0.7f);

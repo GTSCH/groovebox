@@ -29,6 +29,9 @@ std::vector<juce::MidiMessage> EtatSurface::messagesDepuis (const EtatSurface& a
         if (boutons[(size_t) i] != avant.boutons[(size_t) i] || animations[(size_t) i] != avant.animations[(size_t) i])
             messages.push_back (messagePourBouton (i, boutons[(size_t) i], animations[(size_t) i]));
 
+    if (bandeSansRetour != avant.bandeSansRetour || avant.boutons[0] < 0)
+        messages.push_back (sysex::configurationBande (bandeSansRetour ? configurationBandeCurseur : configurationBandeFiltre));
+
     return messages;
 }
 

@@ -48,10 +48,21 @@ public:
 
     std::atomic<float> position { 0.5f }, resonance { 0.2f };
 
+    /** Montée (filtre de sortie) : entre deux instants de la ligne du temps (secondes), le filtre grimpe de sa position
+        vers la cible, de plus en plus vite ; à la fin, il retombe d'un coup sur sa position. Fil principal. */
+    void programmerMontee (double debut, double fin, float cible);
+    void annulerMontee();
+
     /** Fréquences de coupure (Hz) du passe-bas et du passe-haut pour une position (pour les essais). */
     static std::pair<double, double> coupures (float position);
 
+    void applyToBuffer (const te::PluginRenderContext&) override;
+
 private:
+    struct Montee { double debut = 0.0, fin = 0.0; float cible = 0.5f; bool active = false; };
+    juce::SpinLock verrouDeLaMontee;
+    Montee montee, monteeAudio;
+    float positionVisee = 0.5f;
     float positionLissee = 0.5f, resonanceLissee = 0.2f;
     std::array<float, 2> bas1 {}, bas2 {}, haut1 {}, haut2 {};
     void traiter (float& g, float& d) override;

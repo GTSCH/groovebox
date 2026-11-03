@@ -3,12 +3,6 @@
 namespace groovebox
 {
 
-namespace
-{
-    // Bande tactile : LED gérées par le Push, un point, retour automatique au centre (le filtre global redevient neutre)
-    constexpr int configurationDeLaBande = 0b1101000;
-}
-
 PushMidi::PushMidi (Surface& s)  : surface (s)
 {
     chercher();
@@ -89,7 +83,6 @@ void PushMidi::initialiser()
         sortie->sendMessageNow (sysex::entreeDePalette (index, couleur, 0));
 
     sortie->sendMessageNow (sysex::reappliquerPalette());
-    sortie->sendMessageNow (sysex::configurationBande (configurationDeLaBande));
 
     etatEnvoye = false;
     afficher (surface.getEtat(), surface.getEcran());

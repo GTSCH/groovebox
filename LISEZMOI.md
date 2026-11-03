@@ -15,7 +15,7 @@ Groovebox logicielle pour Mac, pilotée au Push 2. Le cahier des charges est dan
 | 6a. Surge XT, jeu en gamme | Faite et validée à l'oreille le 03.11.2026 |
 | 6b. Générateur de basses et mélodies | Faite et validée à l'oreille le 03.11.2026 |
 | 7. Effets | Faite et validée à l'oreille le 03.11.2026 |
-| 8. Enchaînements | Livraison 8a (enchaînements automatiques) faite le 03.11.2026, à valider à l'oreille ; 8b (à la main, montée) à faire |
+| 8. Enchaînements | 8a (enchaînements automatiques) validée à l'oreille le 03.11.2026 ; 8b (à la main, montée) validée à l'oreille le 03.11.2026 |
 | 9 à 11 | Pas commencées |
 
 ## Organisation
@@ -55,7 +55,9 @@ La première compilation prend quelques minutes ; les suivantes sont rapides.
 /Applications/groovebox.app/Contents/MacOS/groovebox --diagnostic 60
 ```
 
-Fait tourner le moteur 60 secondes avec les bips actifs mais muets, en enchaînant toutes les 4 secondes par un fondu d'une mesure entre les deux scènes les plus remplies, puis écrit dans le journal les coupures du son et la charge maximale.
+Avec `--demo` en plus, le diagnostic joue la démo au lieu du dernier morceau ouvert (qui n'est ni changé ni sauvegardé).
+
+Fait tourner le moteur 60 secondes avec les bips actifs mais muets, en enchaînant toutes les 4 secondes par un fondu d'une mesure, avec montée, entre les deux scènes les plus remplies, puis écrit dans le journal les coupures du son et la charge maximale.
 
 Essais : `construction/groovebox_essais_artefacts/Release/groovebox_essais` les lance tous ; avec un nom de série en argument (« Enchaînements », « Surge XT »...), seulement celle-là.
 
@@ -86,4 +88,6 @@ Essais : `construction/groovebox_essais_artefacts/Release/groovebox_essais` les 
 - Push : les 8 boutons du haut de l'écran = envoi momentané au delay ; Add Device ajoute un effet (rappuyer pour confirmer) ; Device passe aussi par les pages d'effets (encodeur 8 : sauter ; Delete + Device : retirer) ; Mix avec Page gauche et droite : volumes, envois delay, envois réverbération, effets de départ et compression de sortie.
 - Enchaînements (`modele/Enchainements`, `moteur/VoixPlugin`) : le nouveau clip part sur la voix libre au calage, l'ancien continue sur la sienne ; chaque voix finit par un `VoixPlugin` (volume, passe-bas, passe-haut, graves coupés sous 180 Hz) qui suit son trajet d'après la position de lecture, à 32 échantillons près, sans attendre le fil principal. Les formes (fondu à puissance constante, échange des basses à mi-parcours, filtre, queue d'écho) sont dans `formeDeLaVoix`. Le fil principal (toutes les 10 ms) ne fait que les envois de la queue d'écho (deux envois par voix, avant son réglage, montés dès le temps qui précède la bascule) et arrête l'ancien clip une fois muet. Annuler : relancer le clip qu'on quitte ; les deux voix refont le chemin à l'envers depuis là où elles en sont (la queue d'écho, elle, repart dans l'autre sens). Une coupe pendant un enchaînement le termine au calage. Le Surge de la voix libre se repose (désactivé, sans reconstruire le graphe du moteur) et se réveille au lancement de l'enchaînement.
 - Push, page Enchaînement (bouton User) : type, durée, batterie nette, intensité ; l'écran montre l'enchaînement en cours et les deux scènes, et la ligne sous l'en-tête avance avec lui sur toutes les pages. Page ouverte, un bouton de scène lance avec ces réglages ; User tenu + scène retient l'enchaînement pour entrer dans la scène (rappuyer le retire). Ailleurs, une scène entre avec son enchaînement retenu, sinon celui de la page ; un clip lancé seul prend celui de la page.
+- Enchaînement à la main : Shift + scène (`Moteur::preparerScene`) lance la scène en silence sur les voix libres, au calage ; la bande tactile passe en curseur (barre depuis le bas, sans retour au centre : `EtatSurface::bandeSansRetour`, qui envoie la configuration au Push) et donne l'avancée de toutes les pistes. Batterie nette : elle change d'un coup au milieu de la bande. En haut, la nouvelle scène prend la main ; redescendu en bas (après être monté), rien n'a changé ; relancer la scène préparée finit le mélange seul, à la vitesse de la durée choisie ; lancer une autre scène l'annule d'abord. Ensuite, la bande attend d'être lâchée avant de redevenir le filtre global. Une coupe choisie devient un fondu à la main.
+- Montée (encodeur 5 de la page Enchaînement) : sur la dernière mesure avant la bascule (ou ce qui en reste), le filtre de sortie monte en passe-haut, de plus en plus vite, à l'échantillon près (`FiltrePlugin::programmerMontee`), et les envois à la réverbération de toutes les pistes grimpent (fil principal). À la bascule, tout retombe d'un coup et la queue de réverbération sonne sur la nouvelle scène. Marche aussi avec la coupe ; pas de montée quand on annule.
 - Licences : Airwindows MIT ; Surge XT GPL v3 ; Grids (carte de grooves) GPL v3 ; libusb LGPL 2.1 ; Tracktion Engine GPL v3, JUCE AGPL v3. Usage personnel, aucune contrainte.

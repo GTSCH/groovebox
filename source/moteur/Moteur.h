@@ -44,6 +44,7 @@ struct EtatEnchainement
     float avancee = 0.0f;           ///< 0 au départ, 1 à la fin
     bool enAttente = false;         ///< Pas encore commencé (attend le calage)
     bool annulation = false;        ///< Revient vers l'ancienne scène
+    bool aLaMain = false;           ///< Mené à la bande tactile
 };
 
 /** Le moteur audio : horloge, mesure, clic, 8 pistes (chacune avec ses voix A et B), clips, scènes et sons de test.
@@ -85,6 +86,18 @@ public:
     /** Lance une scène avec l'enchaînement donné, sinon celui retenu pour la scène, sinon celui du morceau.
         Une piste dont le clip ne change pas continue sans rien changer. */
     void lancerScene (int scene, std::optional<Enchainement> = std::nullopt);
+
+    /** Enchaînement à la main : la scène part en silence au calage, sur les voix libres ; melangerALaMain la fait
+        monter (0 : la scène en cours, 1 : la nouvelle). Arrivé à 1, la nouvelle prend la main ; revenu à 0, rien n'a changé.
+        Relancer la scène préparée termine le mélange tout seul ; lancer une autre scène l'annule d'abord. */
+    void preparerScene (int scene, std::optional<Enchainement> = std::nullopt);
+    void melangerALaMain (float position);
+    bool enchainementALaMain() const;
+    float positionALaMain() const                       { return positionManuelle; }
+    int sceneALaMain() const                            { return sceneManuelle; }
+
+    /** Montée en cours (filtre et réverbération qui grimpent avant la bascule), pour l'affichage et les essais. */
+    bool monteeEnCours() const                          { return montee.active; }
 
     /** Enchaînement en cours sur une piste, ou le plus récent sur l'ensemble des pistes. */
     std::optional<EtatEnchainement> enchainementDeLaPiste (int piste) const;
@@ -218,12 +231,30 @@ private:
         float pDebut = 0.0f, pFin = 1.0f;
         TypeEnchainement type = TypeEnchainement::fondu;
         float intensite = 0.7f;
+        bool manuel = false;            ///< Mené à la bande tactile : l'avancée est celle de la bande
+        bool basculeAuMilieu = false;   ///< À la main, batterie nette : la batterie change d'un coup au milieu de la bande
 
         float avancee (double temps) const;
-        int voixFinale() const          { return pFin > 0.5f ? voixEntrante : voixSortante; }
-        int sceneQuittee() const        { return pFin > 0.5f ? sceneSortante : sceneEntrante; }
-        int sceneVisee() const          { return pFin > 0.5f ? sceneEntrante : sceneSortante; }
+        bool versLeNouveau() const      { return manuel || pFin > 0.5f; }
+        int voixFinale() const          { return versLeNouveau() ? voixEntrante : voixSortante; }
+        int sceneQuittee() const        { return versLeNouveau() ? sceneSortante : sceneEntrante; }
+        int sceneVisee() const          { return versLeNouveau() ? sceneEntrante : sceneSortante; }
     };
+
+    float positionManuelle = 0.0f;
+    bool bandeDejaMontee = false;
+    int sceneManuelle = -1;
+
+    /** Montée avant une bascule, en temps du moteur. */
+    struct Montee
+    {
+        bool active = false;
+        double debut = 0.0, fin = 0.0;
+        float intensite = 0.7f;
+    };
+
+    Montee montee;
+    std::array<float, nombreDePistes> envoisReverbDeLaMontee {};
 
     std::array<EnchainementDePiste, nombreDePistes> enchainements;
     std::array<int, nombreDePistes> voixCourantes {};
@@ -270,7 +301,13 @@ private:
     int voixQuiJoue (int piste, int scene) const;
 
     // Enchaînements
-    void enchainer (int piste, int scene, const Enchainement&);
+    void enchainer (int piste, int scene, const Enchainement&, bool aLaMain = false);
+    void terminerALaMain (bool versLeNouveau);
+    void finirALaMainToutSeul();
+    void programmerMontee (double debut, double fin, float intensite);
+    void annulerMontee();
+    void suivreLaMontee (double maintenant);
+    bool pisteAChanger (int piste, int scene, bool nette) const;
     void annulerEnchainement (int piste);
     void terminerEnchainement (int piste);
     void programmerLesVoix (int piste);

@@ -88,6 +88,7 @@ private:
     int emplacementEffet = 0, typeAAjouter = 0, emplacementAAjouter = 0;
     int voixEuclidienne = 0;
     bool varierEnDupliquant = false;
+    bool ignorerLaBande = false;        ///< Après un mélange à la main, la bande attend d'être lâchée avant de redevenir le filtre
     Annonce annonce;
     std::shared_ptr<bool> vivant = std::make_shared<bool> (true);
     juce::Image ecran { juce::Image::RGB, EtatSurface::largeurEcran, EtatSurface::hauteurEcran, true };

@@ -877,28 +877,218 @@ void Moteur::lancerScene (int scene, std::optional<Enchainement> choisi)
     if (scene < 0 || scene >= (int) morceau.scenes.size())
         return;
 
+    // Pendant un enchaînement à la main : relancer la scène préparée le termine tout seul ; une autre scène l'annule d'abord
+    if (enchainementALaMain())
+    {
+        if (scene == sceneManuelle)
+            return finirALaMainToutSeul();
+
+        terminerALaMain (false);
+    }
+
     const auto e = choisi ? *choisi : morceau.scenes[(size_t) scene].entree.value_or (morceau.enchainement);
     const bool joue = enLecture() && ! demarrageEnAttente;
 
+    // Une nouvelle scène remplace la montée prévue ; relancer la scène qu'on quitte n'en fait pas
+    annulerMontee();
+    bool annulation = false;
+
     for (int p = 0; p < nombreDePistes; ++p)
-    {
-        const auto* clip = morceau.clip (p, scene);
+        if (const auto& t = enchainements[(size_t) p]; t.enCours && t.sceneQuittee() == scene)
+            annulation = true;
 
-        if (clip == nullptr)
-            continue;      // une case vide laisse la piste continuer
-
-        // Dans un enchaînement, une piste dont le clip ne change pas continue sans rien changer
-        if (joue && ! e.coupeNette (morceau.pistes[(size_t) p].estUneBatterie()))
+    if (joue && e.montee && ! annulation)
+        if (auto instant = prochainCalage())
         {
-            const auto& t = enchainements[(size_t) p];
-            const int actuelle = t.enCours ? t.sceneVisee() : sceneSurLaVoix (p, voixCourantes[(size_t) p]);
-            const auto* clipActuel = morceau.clip (p, actuelle);
-
-            if (actuelle >= 0 && clipActuel != nullptr && (actuelle == scene || *clipActuel == *clip))
-                continue;
+            const double maintenant = tempsActuel() + margeDuFilPrincipal();
+            programmerMontee (juce::jmax (maintenant, instant->temps - morceau.mesure.numerateur), instant->temps, e.intensite);
         }
 
-        lancerClip (p, scene, e);
+    for (int p = 0; p < nombreDePistes; ++p)
+        if (morceau.clip (p, scene) != nullptr        // une case vide laisse la piste continuer
+             && (! joue || pisteAChanger (p, scene, e.coupeNette (morceau.pistes[(size_t) p].estUneBatterie()))))
+            lancerClip (p, scene, e);
+}
+
+bool Moteur::pisteAChanger (int p, int scene, bool nette) const
+{
+    // Dans un enchaînement, une piste dont le clip ne change pas continue sans rien changer
+    if (nette)
+        return true;
+
+    const auto& t = enchainements[(size_t) p];
+    const int actuelle = t.enCours ? t.sceneVisee() : sceneSurLaVoix (p, voixCourantes[(size_t) p]);
+    const auto* clipActuel = morceau.clip (p, actuelle);
+    const auto* clip = morceau.clip (p, scene);
+    return ! (actuelle >= 0 && clipActuel != nullptr && clip != nullptr && (actuelle == scene || *clipActuel == *clip));
+}
+
+//==============================================================================
+void Moteur::preparerScene (int scene, std::optional<Enchainement> choisi)
+{
+    if (scene < 0 || scene >= (int) morceau.scenes.size())
+        return;
+
+    // À l'arrêt, rien à mélanger : lancement normal
+    if (! enLecture() || demarrageEnAttente)
+        return lancerScene (scene, choisi);
+
+    if (enchainementALaMain())
+        terminerALaMain (false);
+
+    annulerMontee();
+    auto e = choisi ? *choisi : morceau.scenes[(size_t) scene].entree.value_or (morceau.enchainement);
+
+    // À la main, une coupe n'a pas de sens : la bande fait un fondu
+    if (e.type == TypeEnchainement::coupe)
+        e.type = TypeEnchainement::fondu;
+
+    bool prepare = false;
+
+    for (int p = 0; p < nombreDePistes; ++p)
+    {
+        if (morceau.clip (p, scene) == nullptr || ! pisteAChanger (p, scene, false))
+            continue;
+
+        enchainer (p, scene, e, true);
+        prepare = prepare || enchainements[(size_t) p].manuel;
+    }
+
+    positionManuelle = 0.0f;
+    bandeDejaMontee = false;
+    sceneManuelle = prepare ? scene : -1;
+}
+
+bool Moteur::enchainementALaMain() const
+{
+    return std::any_of (enchainements.begin(), enchainements.end(), [] (auto& t) { return t.enCours && t.manuel; });
+}
+
+void Moteur::melangerALaMain (float position)
+{
+    if (! enchainementALaMain())
+        return;
+
+    positionManuelle = juce::jlimit (0.0f, 1.0f, position);
+    bandeDejaMontee = bandeDejaMontee || positionManuelle > 0.05f;
+
+    for (int p = 0; p < nombreDePistes; ++p)
+        if (auto& t = enchainements[(size_t) p]; t.enCours && t.manuel)
+        {
+            t.pDebut = t.pFin = t.basculeAuMilieu ? (positionManuelle >= 0.5f ? 1.0f : 0.0f) : positionManuelle;
+            programmerLesVoix (p);
+        }
+
+    if (positionManuelle >= 0.99f)
+        terminerALaMain (true);
+    else if (positionManuelle <= 0.01f && bandeDejaMontee)
+        terminerALaMain (false);
+}
+
+void Moteur::terminerALaMain (bool versLeNouveau)
+{
+    const double maintenant = tempsActuel() + margeDuFilPrincipal();
+
+    for (int p = 0; p < nombreDePistes; ++p)
+    {
+        auto& t = enchainements[(size_t) p];
+
+        if (! (t.enCours && t.manuel))
+            continue;
+
+        t.manuel = false;
+
+        if (versLeNouveau && maintenant < t.debut)
+        {
+            // Arrivé en haut avant que la nouvelle scène ait commencé : on finit le fondu au calage
+            t.pDebut = t.basculeAuMilieu ? (positionManuelle >= 0.5f ? 1.0f : 0.0f) : positionManuelle;
+            t.pFin = 1.0f;
+            t.fin = t.debut;
+            t.debut = maintenant;
+            programmerLesVoix (p);
+            continue;
+        }
+
+        t.pDebut = t.pFin = versLeNouveau ? 1.0f : 0.0f;
+        programmerLesVoix (p);
+        terminerEnchainement (p);
+    }
+
+    sceneManuelle = -1;
+}
+
+void Moteur::finirALaMainToutSeul()
+{
+    // La bande lâchée en route : le mélange finit seul, à la vitesse de la durée choisie
+    const double maintenant = tempsActuel() + margeDuFilPrincipal();
+
+    for (int p = 0; p < nombreDePistes; ++p)
+        if (auto& t = enchainements[(size_t) p]; t.enCours && t.manuel)
+        {
+            t.manuel = false;
+            const float depart = t.pDebut;
+            t.debut = juce::jmax (maintenant, t.debut);
+            t.fin = t.debut + t.duree * (1.0 - depart);
+            t.pFin = 1.0f;
+            programmerLesVoix (p);
+        }
+
+    sceneManuelle = -1;
+
+    if (! demarrageEnAttente)
+        startTimer (10);
+}
+
+void Moteur::programmerMontee (double debut, double fin, float intensite)
+{
+    auto enSecondes = [this] (double temps) { return edit->tempoSequence.toTime (te::BeatPosition::fromBeats (temps)).inSeconds(); };
+    montee = { true, debut, fin, intensite };
+    filtreDeSortie->programmerMontee (enSecondes (debut), enSecondes (fin), 0.5f + 0.45f * intensite);
+
+    for (int p = 0; p < nombreDePistes; ++p)
+        envoisReverbDeLaMontee[(size_t) p] = morceau.pistes[(size_t) p].envoiReverbDb;
+
+    if (! demarrageEnAttente)
+        startTimer (10);
+}
+
+void Moteur::annulerMontee()
+{
+    if (! montee.active)
+        return;
+
+    montee.active = false;
+    filtreDeSortie->annulerMontee();
+
+    for (int p = 0; p < nombreDePistes; ++p)
+        pistesMoteur[(size_t) p].envoiReverb->setGainDb (morceau.pistes[(size_t) p].envoiReverbDb);
+}
+
+void Moteur::suivreLaMontee (double maintenant)
+{
+    if (! montee.active)
+        return;
+
+    // Après la bascule, tout retombe d'un coup : la queue de la réverbération sonne sur la nouvelle scène
+    if (maintenant >= montee.fin)
+        return annulerMontee();
+
+    if (maintenant < montee.debut)
+        return;
+
+    // Les envois à la réverbération montent vers -4 dB (selon l'intensité), de plus en plus vite
+    const auto x = (float) ((maintenant - montee.debut) / juce::jmax (1.0e-6, montee.fin - montee.debut));
+    const float vise = -40.0f + (36.0f * montee.intensite) * x * x;
+
+    for (int p = 0; p < nombreDePistes; ++p)
+    {
+        const float db = juce::jmax (morceau.pistes[(size_t) p].envoiReverbDb, vise);
+
+        if (std::abs (db - envoisReverbDeLaMontee[(size_t) p]) > 0.25f)
+        {
+            envoisReverbDeLaMontee[(size_t) p] = db;
+            pistesMoteur[(size_t) p].envoiReverb->setGainDb (db);
+        }
     }
 }
 
@@ -922,7 +1112,7 @@ double Moteur::margeDuFilPrincipal() const
     return 0.03 * morceau.tempo / 60.0 * morceau.mesure.denominateur / 4.0;
 }
 
-void Moteur::enchainer (int piste, int scene, const Enchainement& e)
+void Moteur::enchainer (int piste, int scene, const Enchainement& e, bool aLaMain)
 {
     auto instant = prochainCalage();
 
@@ -930,11 +1120,12 @@ void Moteur::enchainer (int piste, int scene, const Enchainement& e)
         return;
 
     auto& t = enchainements[(size_t) piste];
-    const bool nette = e.coupeNette (morceau.pistes[(size_t) piste].estUneBatterie());
+    const bool batterie = morceau.pistes[(size_t) piste].estUneBatterie();
+    const bool nette = ! aLaMain && e.coupeNette (batterie);
     const double maintenant = tempsActuel() + margeDuFilPrincipal();
 
     // Relancer le clip qu'on est en train de quitter : l'enchaînement repart à l'envers
-    if (t.enCours && ! nette && scene == t.sceneQuittee())
+    if (t.enCours && ! aLaMain && ! nette && scene == t.sceneQuittee())
         return annulerEnchainement (piste);
 
     if (nette)
@@ -977,6 +1168,17 @@ void Moteur::enchainer (int piste, int scene, const Enchainement& e)
     t.pFin = 1.0f;
     t.type = e.type;
     t.intensite = e.intensite;
+    t.manuel = aLaMain;
+    t.basculeAuMilieu = aLaMain && batterie && e.batterieNette;
+
+    // À la main, le nouveau part en silence ; la batterie nette change d'un coup au milieu de la bande
+    if (aLaMain)
+    {
+        t.pFin = 0.0f;
+
+        if (t.basculeAuMilieu)
+            t.type = TypeEnchainement::fondu;
+    }
 
     voixCourantes[(size_t) piste] = entrante;
     appliquerSurges (piste);
@@ -1048,7 +1250,8 @@ void Moteur::programmerLesVoix (int piste)
     auto& pm = pistesMoteur[(size_t) piste];
     auto enSecondes = [this] (double temps) { return edit->tempoSequence.toTime (te::BeatPosition::fromBeats (temps)).inSeconds(); };
 
-    TrajetDeVoix trajet { enSecondes (t.debut), enSecondes (t.fin), t.pDebut, t.pFin, t.type, false, t.intensite };
+    // À la main, la position de la bande vaut tout de suite (le trajet n'a pas de durée)
+    TrajetDeVoix trajet { t.manuel ? 0.0 : enSecondes (t.debut), t.manuel ? 0.0 : enSecondes (t.fin), t.pDebut, t.pFin, t.type, false, t.intensite };
     pm.reglagesDesVoix[(size_t) t.voixSortante]->programmer (trajet);
     trajet.entrante = true;
     pm.reglagesDesVoix[(size_t) t.voixEntrante]->programmer (trajet);
@@ -1101,6 +1304,7 @@ void Moteur::suivreLesEnchainements()
         return;
 
     const double maintenant = tempsActuel();
+    suivreLaMontee (maintenant);
 
     for (int p = 0; p < nombreDePistes; ++p)
     {
@@ -1110,13 +1314,14 @@ void Moteur::suivreLesEnchainements()
             continue;
 
         // Queue d'écho : la voix sortante part dans le delay et la réverbération dès le temps qui précède la bascule
+        // (à la main : selon la bande)
         if (t.type == TypeEnchainement::queueDEcho)
         {
             const auto f = formeDeLaVoix (t.type, false, t.avancee (maintenant), t.intensite);
-            reglerEnvoisDeVoix (p, t.voixSortante, maintenant >= t.debut - 1.0 ? f.envoi : 0.0f);
+            reglerEnvoisDeVoix (p, t.voixSortante, t.manuel || maintenant >= t.debut - 1.0 ? f.envoi : 0.0f);
         }
 
-        if (maintenant >= t.fin + 0.05)
+        if (! t.manuel && maintenant >= t.fin + 0.05)
             terminerEnchainement (p);
     }
 }
@@ -1134,10 +1339,11 @@ std::optional<EtatEnchainement> Moteur::enchainementDeLaPiste (int piste) const
     e.sceneVers = t.sceneVisee();
     e.type = t.type;
     e.enAttente = maintenant < t.debut;
-    e.annulation = t.pFin < 0.5f;
+    e.aLaMain = t.manuel;
+    e.annulation = ! t.versLeNouveau();
     // Un retour se montre comme un trajet à lui : de 0 à 1 entre l'annulation et l'arrivée
     const float p = t.avancee (maintenant);
-    e.avancee = e.annulation ? (t.pDebut > 0.0f ? (t.pDebut - p) / t.pDebut : 1.0f) : p;
+    e.avancee = t.manuel ? positionManuelle : e.annulation ? (t.pDebut > 0.0f ? (t.pDebut - p) / t.pDebut : 1.0f) : p;
     return e;
 }
 
@@ -1234,7 +1440,7 @@ void Moteur::avancer()
     if (demarrageEnAttente)
         return;
 
-    if (std::any_of (enchainements.begin(), enchainements.end(), [] (auto& t) { return t.enCours; }))
+    if (montee.active || std::any_of (enchainements.begin(), enchainements.end(), [] (auto& t) { return t.enCours; }))
     {
         if (getTimerInterval() != 10)
             startTimer (10);
@@ -1357,6 +1563,9 @@ void Moteur::lancer()
 
     if (transport.isPlaying())
     {
+        annulerMontee();
+        sceneManuelle = -1;
+
         for (int p = 0; p < nombreDePistes; ++p)
         {
             arreterMaintenant (p, std::nullopt);
@@ -1392,6 +1601,9 @@ void Moteur::arreter()
     demarrageEnAttente = false;
     lancementsAuDemarrage.clear();
     stopTimer();
+
+    annulerMontee();
+    sceneManuelle = -1;
 
     for (int p = 0; p < nombreDePistes; ++p)
     {

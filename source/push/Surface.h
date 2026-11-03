@@ -15,6 +15,10 @@ struct EtatSurface
     std::array<int, 64> pads {};        ///< Index de palette, 0 en bas à gauche
     std::array<int, 128> boutons {};    ///< Index de palette par numéro de contrôleur
     std::array<int, 128> animations {}; ///< Canal d'animation du Push (0 : aucune)
+    bool bandeSansRetour = false;       ///< Bande tactile en curseur (enchaînement à la main) : elle reste où on la lâche
+
+    /** Réglages de la bande tactile : filtre global (point, retour au centre) ou curseur de mélange (barre depuis le bas, sans retour). */
+    static constexpr int configurationBandeFiltre = 0b1101000, configurationBandeCurseur = 0b0000000;
 
     /** Messages MIDI pour passer de l'état « avant » à cet état (seules les différences sont envoyées). */
     std::vector<juce::MidiMessage> messagesDepuis (const EtatSurface& avant) const;
