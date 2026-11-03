@@ -143,6 +143,7 @@ juce::var Morceau::versJson() const
     var->setProperty ("rotation", variation.rotation);
     var->setProperty ("inversion", variation.inversion);
     racine->setProperty ("variation", juce::var (var));
+    racine->setProperty ("enchainement", enchainement.versJson());
 
     juce::Array<juce::var> listePistes;
 
@@ -194,6 +195,10 @@ juce::var Morceau::versJson() const
             clips.add (c ? clipVersJson (*c) : juce::var());
 
         objet->setProperty ("clips", clips);
+
+        if (s.entree)
+            objet->setProperty ("entree", s.entree->versJson());
+
         listeScenes.add (juce::var (objet));
     }
 
@@ -302,7 +307,7 @@ const Clip* Morceau::clip (int piste, int scene) const
 void Morceau::assurerScenes (int n)
 {
     while ((int) scenes.size() < n)
-        scenes.push_back ({ "Scène "_fr + juce::String ((int) scenes.size() + 1), std::nullopt, std::nullopt, {} });
+        scenes.push_back ({ "Scène "_fr + juce::String ((int) scenes.size() + 1), std::nullopt, std::nullopt, {}, std::nullopt });
 }
 
 Morceau Morceau::depuisJson (const juce::var& v)
@@ -359,6 +364,9 @@ Morceau Morceau::depuisJson (const juce::var& v)
         m.variation.inversion = var.getProperty ("inversion", false);
     }
 
+    if (auto e = Enchainement::depuisJson (v.getProperty ("enchainement", {})))
+        m.enchainement = *e;
+
     if (auto liste = v.getProperty ("pistes", {}).getArray())
     {
         for (int i = 0; i < std::min (nombreDePistes, liste->size()); ++i)
@@ -413,6 +421,8 @@ Morceau Morceau::depuisJson (const juce::var& v)
             if (auto clips = s.getProperty ("clips", {}).getArray())
                 for (int i = 0; i < std::min (nombreDePistes, clips->size()); ++i)
                     scene.clips[(size_t) i] = clipDepuisJson ((*clips)[i]);
+
+            scene.entree = Enchainement::depuisJson (s.getProperty ("entree", {}));
 
             m.scenes.push_back (scene);
         }

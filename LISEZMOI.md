@@ -15,7 +15,8 @@ Groovebox logicielle pour Mac, pilotée au Push 2. Le cahier des charges est dan
 | 6a. Surge XT, jeu en gamme | Faite et validée à l'oreille le 03.11.2026 |
 | 6b. Générateur de basses et mélodies | Faite et validée à l'oreille le 03.11.2026 |
 | 7. Effets | Faite et validée à l'oreille le 03.11.2026 |
-| 8 à 11 | Pas commencées |
+| 8. Enchaînements | Livraison 8a (enchaînements automatiques) faite le 03.11.2026, à valider à l'oreille ; 8b (à la main, montée) à faire |
+| 9 à 11 | Pas commencées |
 
 ## Organisation
 
@@ -54,7 +55,9 @@ La première compilation prend quelques minutes ; les suivantes sont rapides.
 /Applications/groovebox.app/Contents/MacOS/groovebox --diagnostic 60
 ```
 
-Fait tourner le moteur 60 secondes avec les bips actifs mais muets, puis écrit dans le journal les coupures du son et la charge maximale.
+Fait tourner le moteur 60 secondes avec les bips actifs mais muets, en enchaînant toutes les 4 secondes par un fondu d'une mesure entre les deux scènes les plus remplies, puis écrit dans le journal les coupures du son et la charge maximale.
+
+Essais : `construction/groovebox_essais_artefacts/Release/groovebox_essais` les lance tous ; avec un nom de série en argument (« Enchaînements », « Surge XT »...), seulement celle-là.
 
 ## Points techniques à retenir
 
@@ -64,7 +67,7 @@ Fait tourner le moteur 60 secondes avec les bips actifs mais muets, puis écrit 
 - Changer le tempo en pleine lecture ajoute un point de tempo juste après la position actuelle : la mesure ne saute pas. À l'arrêt, on revient à un seul tempo.
 - Le clic est un clip MIDI d'une mesure, en boucle, joué par `ClicPlugin`. Le casque (3-4) reçoit le clic et une copie de la musique (envoi et retour du bus 0). Sans sorties 3-4, il se tait, sauf « écoute sur le Mac », qui envoie le clic seul sur 1-2.
 - Si un bloc audio prend plus de 98 % du temps disponible, le moteur rend un bloc de silence et prend un bloc de retard. Les essais désactivent cette sécurité (le calcul y est hors temps réel) ; en concert, c'est la marge de calcul qui compte (étape 11).
-- Session : chaque piste est un dossier du moteur (volume, panoramique, mute, solo, envoi au casque) qui contient les voix A et B ; les clips sont dans les cases de la voix A, la voix B attend les enchaînements (étape 8). Les lancements utilisent les « launch handles » du moteur, calés sur la limite voulue (temps, mesure, 2 ou 4 mesures, comptées depuis la mesure 1).
+- Session : chaque piste est un dossier du moteur (volume, panoramique, mute, solo, envoi au casque) qui contient les voix A et B ; chaque clip existe dans les cases des deux voix ; la « voix courante » porte la musique, l'autre sert aux enchaînements. Les lancements utilisent les « launch handles » du moteur, calés sur la limite voulue (temps, mesure, 2 ou 4 mesures, comptées depuis la mesure 1).
 - Démarrage : la lecture part tout de suite (au début du décompte, ou 80 ms avant la mesure 1 sans décompte) et les clips sont calés dès que le fil audio confirme la position. À l'arrêt, le moteur ne met pas sa position à jour : ne jamais compter dessus.
 - Le son est calculé sur le seul fil audio (`getNumberOfCPUsToUseForAudio` à 1) : réparti sur les 8 cœurs de la puce M3, il provoquait des coupures malgré 4 % de charge. À revoir avec Surge XT.
 - Annuler : historique du morceau (1000 étapes), un même geste continu (un encodeur) ne compte qu'une fois. Les lancements de clips ne s'annulent pas (c'est du jeu, pas de l'édition).
@@ -75,10 +78,12 @@ Fait tourner le moteur 60 secondes avec les bips actifs mais muets, puis écrit 
 - Générateurs : un clip peut porter sa recette (`Clip::generateur`) ; ses notes sont recalculées à chaque réglage et à chaque changement de mesure ; Convert la retire (clip figé). Résolution : la double-croche, quelle que soit la mesure. Le swing ne touche pas les notes du morceau : le moteur retarde les double-croches du contretemps au moment d'écrire le clip.
 - Push, pages Device d'une piste de synthé : Device fait tourner Macros, Mélodie, Commun (swing, graine, longueur). Le style de départ d'une mélodie suit le son de Surge de la piste.
 - Push, pages Device d'une piste batterie : Device fait tourner Pad, Générateur, Commun. Clip : réglages de Shift + Duplicate. Encodeur Swing : swing global ; avec Shift, celui de la piste.
-- Surge XT (GPL v3, installé à part dans /Library/Audio/Plug-Ins/VST3) : une instance sur la voix A de chaque piste de synthé, pilotée par ses paramètres nommés (`PiloteDeSurge`). Les 24 sons de départ (`SonsDeSynthe.cpp`) sont écrits en unités affichées par Surge (« LP 24 dB », Hz, ms...) ; groovebox retrouve la valeur interne en parcourant l'échelle de chaque réglage. Sans Surge, le son provisoire reprend la main. La voix B recevra son Surge avec les enchaînements.
+- Surge XT (GPL v3, installé à part dans /Library/Audio/Plug-Ins/VST3) : une instance par voix (A et B) de chaque piste de synthé, avec les mêmes réglages, pilotée par ses paramètres nommés (`PiloteDeSurge`). Les 24 sons de départ (`SonsDeSynthe.cpp`) sont écrits en unités affichées par Surge (« LP 24 dB », Hz, ms...) ; groovebox retrouve la valeur interne en parcourant l'échelle de chaque réglage. Sans Surge, le son provisoire reprend la main.
 - Outils : `groovebox --parametres-surge` liste les 776 réglages de Surge ; `--options-surge "A Filter 1 Type,..."` donne leurs choix.
 - Gamme du morceau (bouton Scale) ; mode Note des synthés : un degré par colonne, une quarte par rangée, comme le Push d'Ableton.
 - Niveaux : la batterie sort à -6 dB (facteur 0,5), Surge a un volume général de -4 dB ; la démo culmine sous 0 dB. Limiteur de protection : étape 7.
 - Effets : 3 emplacements par piste, avant son volume. Maison (`EffetsMaison`) : filtre à un bouton, saturation, distorsion lourde (gain jusqu'à +40 dB, de l'écrêtage doux au repliement), punch (attaque, maintien, puissance), grave (renforcé et saturé), delay dub (retour jusqu'à 120 %, borné par la saturation de la boucle), limiteur ; Airwindows du moteur (option `TRACKTION_AIR_WINDOWS`) : DeRez2 (lo-fi), ButterComp2 (compresseur), TapeDelay (écho court), ChorusEnsemble (chorus). Effets de départ : deux pistes de retour (bus 1 delay, bus 2 réverbération du moteur), reprises dans le casque (bus 0). Sortie : filtre global (bande tactile, retour au centre) puis compresseur léger et limiteur à -1 dB ; le casque a son propre limiteur.
 - Push : les 8 boutons du haut de l'écran = envoi momentané au delay ; Add Device ajoute un effet (rappuyer pour confirmer) ; Device passe aussi par les pages d'effets (encodeur 8 : sauter ; Delete + Device : retirer) ; Mix avec Page gauche et droite : volumes, envois delay, envois réverbération, effets de départ et compression de sortie.
+- Enchaînements (`modele/Enchainements`, `moteur/VoixPlugin`) : le nouveau clip part sur la voix libre au calage, l'ancien continue sur la sienne ; chaque voix finit par un `VoixPlugin` (volume, passe-bas, passe-haut, graves coupés sous 180 Hz) qui suit son trajet d'après la position de lecture, à 32 échantillons près, sans attendre le fil principal. Les formes (fondu à puissance constante, échange des basses à mi-parcours, filtre, queue d'écho) sont dans `formeDeLaVoix`. Le fil principal (toutes les 10 ms) ne fait que les envois de la queue d'écho (deux envois par voix, avant son réglage, montés dès le temps qui précède la bascule) et arrête l'ancien clip une fois muet. Annuler : relancer le clip qu'on quitte ; les deux voix refont le chemin à l'envers depuis là où elles en sont (la queue d'écho, elle, repart dans l'autre sens). Une coupe pendant un enchaînement le termine au calage. Le Surge de la voix libre se repose (désactivé, sans reconstruire le graphe du moteur) et se réveille au lancement de l'enchaînement.
+- Push, page Enchaînement (bouton User) : type, durée, batterie nette, intensité ; l'écran montre l'enchaînement en cours et les deux scènes, et la ligne sous l'en-tête avance avec lui sur toutes les pages. Page ouverte, un bouton de scène lance avec ces réglages ; User tenu + scène retient l'enchaînement pour entrer dans la scène (rappuyer le retire). Ailleurs, une scène entre avec son enchaînement retenu, sinon celui de la page ; un clip lancé seul prend celui de la page.
 - Licences : Airwindows MIT ; Surge XT GPL v3 ; Grids (carte de grooves) GPL v3 ; libusb LGPL 2.1 ; Tracktion Engine GPL v3, JUCE AGPL v3. Usage personnel, aucune contrainte.

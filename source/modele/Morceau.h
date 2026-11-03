@@ -6,6 +6,7 @@
 #include "Gamme.h"
 #include "Melodies.h"
 #include "Effets.h"
+#include "Enchainements.h"
 
 namespace groovebox
 {
@@ -88,6 +89,7 @@ struct Scene
     std::optional<Mesure> mesure;
     std::optional<double> tempo;
     std::array<std::optional<Clip>, nombreDePistes> clips;
+    std::optional<Enchainement> entree;     ///< Enchaînement retenu pour entrer dans la scène ; sinon, celui du morceau
 
     bool estVide() const;
     bool operator== (const Scene&) const = default;
@@ -101,7 +103,7 @@ juce::String nomDuCalage (Calage);
 struct Morceau
 {
     static constexpr double tempoMin = 60.0, tempoMax = 200.0;
-    static constexpr int versionDuFormat = 2;
+    static constexpr int versionDuFormat = 3;
 
     juce::String nom { "Sans titre" };
     double tempo = 120.0;             ///< BPM, toujours à la noire
@@ -116,6 +118,7 @@ struct Morceau
     float compressionDeSortie = 0.3f; ///< Compresseur léger de la sortie principale, avant le limiteur
     float swing = 0.0f;               ///< 0 à 0,75 : retard des double-croches du contretemps (encodeur Swing)
     Variation variation;              ///< Réglages de « dupliquer et varier »
+    Enchainement enchainement;        ///< Enchaînement de la page User, pour les scènes sans enchaînement retenu et les clips
     juce::uint32 prochaineGraine = 2; ///< Graine donnée à la prochaine variation
     std::array<Piste, nombreDePistes> pistes = pistesDeDepart();
     std::vector<Scene> scenes;

@@ -6,6 +6,7 @@
 #include "BatteriePlugin.h"
 #include "SonsDeSynthe.h"
 #include "EffetsMaison.h"
+#include "VoixPlugin.h"
 #include "modele/Morceau.h"
 
 namespace groovebox
@@ -32,7 +33,17 @@ struct EtatCase
     bool clip = false;
     bool joue = false;
     bool departEnAttente = false;   ///< Démarre au prochain calage
-    bool arretEnAttente = false;    ///< S'arrête au prochain calage
+    bool arretEnAttente = false;    ///< S'arrête au prochain calage (ou s'efface dans un enchaînement)
+};
+
+/** Un enchaînement en cours sur une piste, pour l'affichage. */
+struct EtatEnchainement
+{
+    int sceneDe = -1, sceneVers = -1;
+    TypeEnchainement type = TypeEnchainement::coupe;
+    float avancee = 0.0f;           ///< 0 au départ, 1 à la fin
+    bool enAttente = false;         ///< Pas encore commencé (attend le calage)
+    bool annulation = false;        ///< Revient vers l'ancienne scène
 };
 
 /** Le moteur audio : horloge, mesure, clic, 8 pistes (chacune avec ses voix A et B), clips, scènes et sons de test.
@@ -65,10 +76,23 @@ public:
     bool peutRetablir() const                   { return ! futur.empty(); }
 
     //==============================================================================
-    /** Lance un clip au prochain calage (la piste quitte son clip en cours au même instant).
+    /** Lance un clip au prochain calage, avec l'enchaînement donné (sinon celui du morceau).
+        En coupe, la piste quitte son clip en cours au même instant ; sinon, l'ancien et le nouveau jouent ensemble
+        le temps de l'enchaînement. Relancer le clip qu'on quitte annule l'enchaînement en cours, à l'envers.
         À l'arrêt, la lecture démarre, avec le décompte, et le clip part à la mesure 1. */
-    void lancerClip (int piste, int scene);
-    void lancerScene (int scene);
+    void lancerClip (int piste, int scene, std::optional<Enchainement> = std::nullopt);
+
+    /** Lance une scène avec l'enchaînement donné, sinon celui retenu pour la scène, sinon celui du morceau.
+        Une piste dont le clip ne change pas continue sans rien changer. */
+    void lancerScene (int scene, std::optional<Enchainement> = std::nullopt);
+
+    /** Enchaînement en cours sur une piste, ou le plus récent sur l'ensemble des pistes. */
+    std::optional<EtatEnchainement> enchainementDeLaPiste (int piste) const;
+    std::optional<EtatEnchainement> enchainementEnCours() const;
+
+    /** Voix (0 : A, 1 : B) qui porte la musique de la piste, une fois l'enchaînement en cours terminé. */
+    int voixCourante (int piste) const                  { return voixCourantes[(size_t) piste]; }
+    VoixPlugin* reglageDeVoix (int piste, int laquelle) const   { return pistesMoteur[(size_t) piste].reglagesDesVoix[(size_t) laquelle]; }
     void arreterPiste (int piste);
     void arreterTousLesClips();
 
@@ -77,7 +101,8 @@ public:
     /** Scène du clip qui joue sur la piste, ou -1. */
     int sceneJouee (int piste) const;
 
-    /** Traite ce qui attend le démarrage de la lecture. Appelé tout seul ; les essais l'appellent à la main. */
+    /** Traite ce qui attend le démarrage de la lecture et fait avancer les enchaînements (fin, envois de la queue d'écho).
+        Appelé tout seul ; les essais l'appellent à la main. */
     void avancer();
 
     /** Temps du moteur (depuis le début de la ligne du temps) où démarre la mesure 1. */
@@ -157,6 +182,13 @@ private:
     te::MidiClip::Ptr clipDuClic;
     bool lectureVoulue = false;
 
+    /** Un instant de calage : pour lancer les clips (temps monotone) et pour les enchaînements (temps du moteur). */
+    struct Instant
+    {
+        te::MonotonicBeat monotone;
+        double temps = 0.0;
+    };
+
     struct PisteMoteur
     {
         te::FolderTrack* dossier = nullptr;
@@ -171,7 +203,30 @@ private:
         std::array<std::unique_ptr<PiloteDeSurge>, 2> pilotesSurge;
         te::AuxSendPlugin* envoiCasque = nullptr;
         te::VolumeAndPanPlugin* volume = nullptr;
+        std::array<VoixPlugin*, 2> reglagesDesVoix {};              ///< Volume et filtres d'enchaînement de chaque voix
+        std::array<std::array<te::AuxSendPlugin*, 2>, 2> envoisDesVoix {};   ///< Queue d'écho : [voix][delay, réverbération]
+        std::array<std::array<float, 2>, 2> niveauxDesEnvois {};
     };
+
+    /** Enchaînement d'une piste, en temps du moteur. L'avancée va de pDebut à pFin : vers 1 à l'aller, vers 0 en annulation. */
+    struct EnchainementDePiste
+    {
+        bool enCours = false;
+        int voixSortante = 0, voixEntrante = 1;
+        int sceneSortante = -1, sceneEntrante = -1;
+        double debut = 0.0, fin = 0.0, duree = 0.0;
+        float pDebut = 0.0f, pFin = 1.0f;
+        TypeEnchainement type = TypeEnchainement::fondu;
+        float intensite = 0.7f;
+
+        float avancee (double temps) const;
+        int voixFinale() const          { return pFin > 0.5f ? voixEntrante : voixSortante; }
+        int sceneQuittee() const        { return pFin > 0.5f ? sceneSortante : sceneEntrante; }
+        int sceneVisee() const          { return pFin > 0.5f ? sceneEntrante : sceneSortante; }
+    };
+
+    std::array<EnchainementDePiste, nombreDePistes> enchainements;
+    std::array<int, nombreDePistes> voixCourantes {};
 
     std::array<PisteMoteur, nombreDePistes> pistesMoteur;
     std::array<bool, nombreDePistes> momentanes {};
@@ -204,11 +259,28 @@ private:
     void appliquerCases (const Morceau& ancien, bool tout);
     void appliquerCase (int piste, int scene);
     void assurerCases();
-    te::MidiClip* clipDeLaCase (int piste, int scene) const;
+    void appliquerCaseSurLaVoix (int piste, int scene, int voix);
+    te::MidiClip* clipDeLaCase (int piste, int scene, int voix = 0) const;
     double longueurDuCalage() const;
-    std::optional<te::MonotonicBeat> prochainCalage (std::optional<double> tempsVise = std::nullopt) const;
-    void lancerMaintenant (int piste, int scene, te::MonotonicBeat);
+    std::optional<Instant> prochainCalage (std::optional<double> tempsVise = std::nullopt) const;
+    void lancerSurLaVoix (int piste, int voix, int scene, te::MonotonicBeat);
+    void arreterLaVoix (int piste, int voix, std::optional<te::MonotonicBeat>);
     void arreterMaintenant (int piste, std::optional<te::MonotonicBeat>);
+    int sceneSurLaVoix (int piste, int voix) const;
+    int voixQuiJoue (int piste, int scene) const;
+
+    // Enchaînements
+    void enchainer (int piste, int scene, const Enchainement&);
+    void annulerEnchainement (int piste);
+    void terminerEnchainement (int piste);
+    void programmerLesVoix (int piste);
+    void reposerLesVoix (int piste);
+    void reglerEnvoisDeVoix (int piste, int voix, float niveau);
+    void appliquerSurges (int piste);
+    void suivreLesEnchainements();
+    void avancerLeDemarrage();
+    double tempsActuel() const;
+    double margeDuFilPrincipal() const;
     void timerCallback() override       { avancer(); }
 
     BipPlugin* bip (Sortie) const;

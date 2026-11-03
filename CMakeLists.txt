@@ -29,6 +29,8 @@ set (SOURCES_MOTEUR
     source/modele/Gamme.cpp
     source/modele/Melodies.cpp
     source/modele/Effets.cpp
+    source/modele/Enchainements.cpp
+    source/moteur/VoixPlugin.cpp
     source/moteur/BipPlugin.cpp
     source/moteur/ClicPlugin.cpp
     source/moteur/InstrumentProvisoire.cpp

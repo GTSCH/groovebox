@@ -1328,7 +1328,7 @@ public:
             expect (niveau() > 0.01f, "deux pistes en solo : la grosse caisse revient"_fr);
         }
 
-        beginTest ("La voix B de chaque piste a son instrument et reste muette");
+        beginTest ("En coupe, la voix B a son instrument et la copie des clips, mais ne joue pas"_fr);
         {
             CarteSimulee carte (engine, 4);
             Moteur moteur (engine, morceauDeDemonstration(), &banqueEssai());
@@ -1341,8 +1341,16 @@ public:
                 auto b = moteur.voix (p, 1);
                 expect (b != nullptr && b->pluginList.getPluginsOfType<InstrumentProvisoire>().size() == 1, "instrument de la voix B"_fr);
 
-                for (auto c : b->getClipSlotList().getClipSlots())
-                    expect (c->getClip() == nullptr, "aucun clip sur la voix B"_fr);
+                auto casesA = moteur.voix (p, 0)->getClipSlotList().getClipSlots();
+                auto casesB = b->getClipSlotList().getClipSlots();
+
+                for (int s = 0; s < casesB.size(); ++s)
+                {
+                    expect ((casesB[s]->getClip() == nullptr) == (casesA[s]->getClip() == nullptr), "même clip sur les deux voix"_fr);
+
+                    if (auto c = casesB[s]->getClip())
+                        expect (c->getLaunchHandle()->getPlayingStatus() != te::LaunchHandle::PlayState::playing, "rien ne joue sur la voix B"_fr);
+                }
             }
 
             expect (moteur.etatCase (3, 2).joue, "la scène Plein joue");
@@ -2037,15 +2045,59 @@ public:
             return;
         }
 
-        beginTest ("Les pistes de synthé jouent avec Surge XT, la voix B reste éteinte"_fr);
+        beginTest ("Les pistes de synthé jouent avec Surge XT, le Surge de la voix libre se repose"_fr);
         {
             CarteSimulee carte (engine, 2);
             Moteur moteur (engine, morceauDeDemonstration(), &banqueEssai());
 
             for (int p = 0; p < nombreDePistes; ++p)
-                expect (moteur.joueAvecSurge (p) == ! moteur.getMorceau().pistes[(size_t) p].estUneBatterie(), moteur.getMorceau().pistes[(size_t) p].nom);
+            {
+                const bool synthe = ! moteur.getMorceau().pistes[(size_t) p].estUneBatterie();
+                expect (moteur.joueAvecSurge (p) == synthe, moteur.getMorceau().pistes[(size_t) p].nom);
+
+                if (synthe)
+                {
+                    auto surges = moteur.voix (p, 1)->pluginList.getPluginsOfType<te::ExternalPlugin>();
+                    expect (surges.size() == 1 && ! surges[0]->isEnabled(), "Surge de la voix B au repos");
+                }
+            }
 
             expectEquals (moteur.getMorceau().pistes[1].sonDeSynthe, juce::String ("Sub dub"), "son par défaut de la basse"_fr);
+        }
+
+        beginTest ("Fondu sur une piste de synthé : le Surge de la voix B prend le relais avec le même son"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+            m.clic.actif = false;
+            m.assurerScenes (2);
+            m.scenes[0].clips[2] = Clip { "Do", 1, { Note { 0.0, 4.0, 60, 100 } } };
+            m.scenes[1].clips[2] = Clip { "Sol", 1, { Note { 0.0, 4.0, 67, 100 } } };
+            Moteur moteur (engine, m, &banqueEssai());
+            auto surgeB = moteur.voix (2, 1)->pluginList.getPluginsOfType<te::ExternalPlugin>();
+            expect (surgeB.size() == 1);
+
+            moteur.lancerScene (0);
+
+            for (int i = 0; i < 100; ++i) { carte.jouer (1200); moteur.avancer(); }
+
+            const auto avant = carte.jouer (uneSeconde / 2);
+            Enchainement e;
+            e.type = TypeEnchainement::fondu;
+            e.mesures = 1;
+            moteur.lancerScene (1, e);
+            expect (surgeB.size() == 1 && surgeB[0]->isEnabled(), "le Surge de la voix B se réveille");
+
+            for (int i = 0; i < 160; ++i) { carte.jouer (1200); moteur.avancer(); }
+
+            expectEquals (moteur.voixCourante (2), 1);
+            expect (moteur.joueAvecSurge (2), "la piste joue avec le Surge de la voix B");
+            const auto apres = carte.jouer (uneSeconde / 2);
+            logMessage ("  niveau avant " + juce::String (niveauEfficace (avant, 0), 3) + ", après "_fr + juce::String (niveauEfficace (apres, 0), 3));
+            expect (niveauEfficace (apres, 0) > 0.5f * niveauEfficace (avant, 0), "le nouveau clip sonne aussi fort, avec Surge");
+
+            auto surgeA = moteur.voix (2, 0)->pluginList.getPluginsOfType<te::ExternalPlugin>();
+            expect (surgeA.size() == 1 && ! surgeA[0]->isEnabled(), "le Surge de la voix A se repose à son tour");
         }
 
         beginTest ("Les 24 sons de départ s'appliquent sans réglage manquant"_fr);
@@ -2743,6 +2795,504 @@ public:
     }
 };
 
+//==============================================================================
+class EssaisEnchainements  : public juce::UnitTest
+{
+public:
+    EssaisEnchainements()  : juce::UnitTest ("Enchaînements"_fr, "groovebox") {}
+
+    static Clip clipTenu (const char* nom, int note)
+    {
+        return Clip { nom, 1, { Note { 0.0, 4.0, note, 100 } } };
+    }
+
+    /** 120 BPM en 4/4, sans décompte ni clic : la mesure 1 part 80 ms après le lancement et dure 2 secondes. */
+    static Morceau morceauDEnchainement()
+    {
+        auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+        m.clic.actif = false;
+        m.assurerScenes (4);
+        return m;
+    }
+
+    static Enchainement enchainement (TypeEnchainement type, int mesures, float intensite = 0.7f)
+    {
+        Enchainement e;
+        e.type = type;
+        e.mesures = mesures;
+        e.intensite = intensite;
+        return e;
+    }
+
+    /** Joue n échantillons par tranches de 25 ms, en laissant le moteur suivre ses enchaînements entre deux. */
+    static juce::AudioBuffer<float> jouerEtAvancer (Moteur& moteur, CarteSimulee& carte, int n)
+    {
+        juce::AudioBuffer<float> tout (2, n);
+
+        for (int debut = 0; debut < n; debut += 1200)
+        {
+            const int k = std::min (1200, n - debut);
+            auto morceau = carte.jouer (k);
+
+            for (int c = 0; c < 2; ++c)
+                tout.copyFrom (c, debut, morceau, c, 0, k);
+
+            moteur.avancer();
+        }
+
+        return tout;
+    }
+
+    /** Joue jusqu'à un instant (secondes depuis le lancement), en accumulant ce qui sort. */
+    struct Enregistrement
+    {
+        juce::AudioBuffer<float> audio { 2, 0 };
+        int position = 0;
+
+        void jusqua (Moteur& moteur, CarteSimulee& carte, double secondes)
+        {
+            const int fin = (int) (secondes * uneSeconde);
+
+            if (fin <= position)
+                return;
+
+            auto suite = jouerEtAvancer (moteur, carte, fin - position);
+            audio.setSize (2, fin, true, true);
+
+            for (int c = 0; c < 2; ++c)
+                audio.copyFrom (c, position, suite, c, 0, suite.getNumSamples());
+
+            position = fin;
+        }
+
+        int ech (double secondes) const     { return (int) (secondes * uneSeconde); }
+
+        float rms (double de, double a) const        { return niveauEfficace (audio, 0, ech (de), ech (a)); }
+
+        /** Plus petit niveau efficace sur des fenêtres de 100 ms. */
+        float rmsMin (double de, double a) const
+        {
+            float m = 1.0e9f;
+
+            for (double t = de; t + 0.1 <= a; t += 0.05)
+                m = juce::jmin (m, rms (t, t + 0.1));
+
+            return m;
+        }
+
+        float saut (double de, double a) const
+        {
+            juce::AudioBuffer<float> extrait (1, ech (a) - ech (de));
+            extrait.copyFrom (0, 0, audio, 0, ech (de), extrait.getNumSamples());
+            return sautMax (extrait, 0);
+        }
+
+        /** Amplitude d'une fréquence (Goertzel). */
+        float amplitude (double de, double a, double hz) const
+        {
+            const int d = ech (de), f = ech (a);
+            const double w = juce::MathConstants<double>::twoPi * hz / frequence;
+            const double k = 2.0 * std::cos (w);
+            double s1 = 0.0, s2 = 0.0;
+
+            for (int i = d; i < f; ++i)
+            {
+                const double s = audio.getSample (0, i) + k * s1 - s2;
+                s2 = s1;
+                s1 = s;
+            }
+
+            return (float) (std::sqrt (s1 * s1 + s2 * s2 - k * s1 * s2) * 2.0 / (f - d));
+        }
+    };
+
+    static double frequenceDeLaNote (int note)     { return 440.0 * std::pow (2.0, (note - 69) / 12.0); }
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+
+        beginTest ("Formes des enchaînements"_fr);
+        {
+            for (int t = 0; t < nombreDeTypesDEnchainement; ++t)
+            {
+                const auto type = (TypeEnchainement) t;
+                const auto nom = nomDeLEnchainement (type);
+                const auto sortieAuDepart = formeDeLaVoix (type, false, 0.0f, 0.7f);
+                const auto sortieALaFin = formeDeLaVoix (type, false, 1.0f, 0.7f);
+                const auto entreeALaFin = formeDeLaVoix (type, true, 1.0f, 0.7f);
+
+                expectWithinAbsoluteError (sortieAuDepart.gain, 1.0f, 1.0e-4f, nom + " : l'ancien joue au départ"_fr);
+                expect (sortieAuDepart.estNeutre(), nom + " : l'ancien n'est pas filtré au départ"_fr);
+                expectWithinAbsoluteError (sortieALaFin.gain, 0.0f, 1.0e-4f, nom + " : l'ancien s'est tu à la fin");
+                expectWithinAbsoluteError (entreeALaFin.gain, 1.0f, 1.0e-4f, nom + " : le nouveau joue à fond à la fin");
+                expect (entreeALaFin.estNeutre(), nom + " : le nouveau n'est plus filtré à la fin");
+                expectEquals (entreeALaFin.envoi, 0.0f);
+            }
+
+            for (float p = 0.0f; p <= 1.0f; p += 0.01f)
+            {
+                const auto s = formeDeLaVoix (TypeEnchainement::fondu, false, p, 0.7f);
+                const auto e = formeDeLaVoix (TypeEnchainement::fondu, true, p, 0.7f);
+                expectWithinAbsoluteError (s.gain * s.gain + e.gain * e.gain, 1.0f, 1.0e-4f, "fondu à puissance constante"_fr);
+
+                const auto bs = formeDeLaVoix (TypeEnchainement::echangeDesBasses, false, p, 0.7f);
+                const auto be = formeDeLaVoix (TypeEnchainement::echangeDesBasses, true, p, 0.7f);
+                expect (bs.sansGraves + be.sansGraves >= 1.0f, "jamais deux basses en même temps");
+            }
+
+            Morceau m = morceauDEnchainement();
+            m.enchainement = enchainement (TypeEnchainement::filtre, 8, 0.4f);
+            m.enchainement.batterieNette = false;
+            m.scenes[2].entree = enchainement (TypeEnchainement::queueDEcho, 2);
+            const auto relu = Morceau::depuisJson (juce::JSON::parse (juce::JSON::toString (m.versJson())));
+            expect (relu == m, "enchaînements sauvegardés et relus");
+            expect (! relu.scenes[1].entree.has_value());
+        }
+
+        beginTest ("Le réglage de voix bascule à l'échantillon près et coupe les graves"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDEnchainement(), &banqueEssai());
+            auto plugin = moteur.getEdit().getPluginCache().createNewPlugin (VoixPlugin::xmlTypeName, {});
+            auto* voix = dynamic_cast<VoixPlugin*> (plugin.get());
+            expect (voix != nullptr);
+            voix->initialise ({ te::TimePosition(), frequence, 2048 });
+
+            auto traiter = [voix] (juce::AudioBuffer<float>& b, double debut)
+            {
+                te::PluginRenderContext rc (&b, juce::AudioChannelSet::stereo(), 0, b.getNumSamples(), nullptr, 0.0,
+                                            te::TimeRange (te::TimePosition::fromSeconds (debut), te::TimeDuration::fromSeconds (b.getNumSamples() / frequence)),
+                                            true, false, false, false);
+                voix->applyToBuffer (rc);
+            };
+
+            // Coupe de l'ancien à 1 s pile
+            voix->programmer ({ 1.0, 1.0, 0.0f, 1.0f, TypeEnchainement::coupe, false, 0.7f });
+            juce::AudioBuffer<float> uns (2, 2400);
+
+            for (int c = 0; c < 2; ++c)
+                juce::FloatVectorOperations::fill (uns.getWritePointer (c), 1.0f, 2400);
+
+            traiter (uns, 0.99);
+            const int bascule = 480;
+            expect (uns.getSample (0, bascule - 20) > 0.999f, "rien ne change avant la bascule");
+            expect (uns.getSample (0, bascule + 48) < 0.9f, "la bascule commence à l'instant prévu"_fr);
+            expect (uns.getSample (0, bascule + 720) < 0.01f, "15 ms plus tard, la voix s'est tue");
+            expect (sautMax (uns, 0) < 0.01f, "sans saut");
+
+            // Graves coupés (échange des basses, ancien juste après la mi-parcours)
+            voix->programmer ({ 0.0, 100.0, 0.5f, 0.5f, TypeEnchainement::echangeDesBasses, false, 0.7f });
+
+            auto sinus = [] (double hz)
+            {
+                juce::AudioBuffer<float> b (2, uneSeconde);
+
+                for (int i = 0; i < uneSeconde; ++i)
+                    for (int c = 0; c < 2; ++c)
+                        b.setSample (c, i, (float) std::sin (juce::MathConstants<double>::twoPi * hz * i / frequence));
+
+                return b;
+            };
+
+            auto grave = sinus (65.0);
+            traiter (grave, 10.0);
+            expect (niveauEfficace (grave, 0, uneSeconde / 2, uneSeconde) < 0.03f, "graves coupés : " + juce::String (niveauEfficace (grave, 0, uneSeconde / 2, uneSeconde)));
+            auto medium = sinus (1000.0);
+            traiter (medium, 11.0);
+            expect (niveauEfficace (medium, 0, uneSeconde / 2, uneSeconde) > 0.65f, "le reste passe");
+
+            voix->reposer (1.0f);
+            auto libre = sinus (65.0);
+            traiter (libre, 12.0);
+            traiter (libre, 13.0);
+            expectWithinAbsoluteError (niveauEfficace (libre, 0, uneSeconde / 2, uneSeconde), 0.707f, 0.01f, "au repos, la voix laisse tout passer");
+        }
+
+        beginTest ("Fondu : sans trou, sans saut, calé sur la mesure"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauDEnchainement();
+            m.scenes[0].clips[2] = clipTenu ("Do", 60);
+            m.scenes[1].clips[2] = clipTenu ("Sol", 67);
+            Moteur moteur (engine, m, &banqueEssai());
+            Enregistrement r;
+
+            moteur.lancerScene (0);
+            r.jusqua (moteur, carte, 2.5);
+            moteur.lancerScene (1, enchainement (TypeEnchainement::fondu, 2));
+
+            const auto e = moteur.enchainementDeLaPiste (2);
+            expect (e && e->enAttente && e->sceneDe == 0 && e->sceneVers == 1, "enchaînement prévu à la mesure suivante"_fr);
+            expect (moteur.etatCase (2, 1).departEnAttente);
+
+            r.jusqua (moteur, carte, 6.08);
+            const auto milieu = moteur.enchainementDeLaPiste (2);
+            expect (milieu && std::abs (milieu->avancee - 0.5f) < 0.05f, "à mi-chemin au milieu des deux mesures : " + juce::String (milieu ? milieu->avancee : -1.0f));
+            expect (moteur.etatCase (2, 0).joue && moteur.etatCase (2, 1).joue, "les deux clips jouent ensemble");
+            expect (moteur.etatCase (2, 0).arretEnAttente, "l'ancien est montré comme en train de partir");
+
+            r.jusqua (moteur, carte, 10.0);
+            const float avant = r.rmsMin (1.5, 4.0);
+            const float pendant = r.rmsMin (4.0, 8.2);
+            const float apres = r.rmsMin (8.2, 10.0);
+            logMessage ("  niveau avant " + juce::String (avant, 3) + ", pendant " + juce::String (pendant, 3) + ", après "_fr + juce::String (apres, 3));
+            expect (pendant > 0.7f * juce::jmin (avant, apres), "pas de trou pendant le fondu");
+
+            const float sautNormal = juce::jmax (r.saut (1.5, 4.0), r.saut (8.2, 10.0));
+            expect (r.saut (4.0, 8.2) < 1.3f * sautNormal + 0.005f, "pas de saut : " + juce::String (r.saut (4.0, 8.2), 4) + " pour " + juce::String (sautNormal, 4));
+
+            expect (! moteur.enchainementDeLaPiste (2).has_value(), "enchaînement terminé"_fr);
+            expectEquals (moteur.sceneJouee (2), 1);
+            expect (! moteur.etatCase (2, 0).joue, "l'ancien s'est arrêté");
+            expectEquals (moteur.voixCourante (2), 1);
+            expect (r.amplitude (8.5, 10.0, frequenceDeLaNote (60)) < 0.1f * r.amplitude (8.5, 10.0, frequenceDeLaNote (67)), "il ne reste que le nouveau");
+
+            // Et retour par un second fondu, sur la voix A
+            moteur.lancerScene (0, enchainement (TypeEnchainement::fondu, 1));
+            r.jusqua (moteur, carte, 14.5);
+            expectEquals (moteur.sceneJouee (2), 0);
+            expectEquals (moteur.voixCourante (2), 0);
+            expect (r.rmsMin (10.0, 14.5) > 0.7f * avant, "pas de trou au retour");
+        }
+
+        beginTest ("Échange des basses : jamais deux basses ensemble"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauDEnchainement();
+            // Clips de deux mesures : la bascule des graves (à mi-parcours) ne tombe pas sur une reprise de note
+            m.scenes[0].clips[1] = Clip { "Do grave", 2, { Note { 0.0, 8.0, 36, 100 } } };
+            m.scenes[1].clips[1] = Clip { "Fa grave", 2, { Note { 0.0, 8.0, 41, 100 } } };
+            Moteur moteur (engine, m, &banqueEssai());
+            Enregistrement r;
+
+            moteur.lancerScene (0);
+            r.jusqua (moteur, carte, 2.5);
+            moteur.lancerScene (1, enchainement (TypeEnchainement::echangeDesBasses, 2));
+            r.jusqua (moteur, carte, 10.0);
+
+            const double ancienne = frequenceDeLaNote (36), nouvelle = frequenceDeLaNote (41);
+            const float a1 = r.amplitude (5.0, 5.9, ancienne), n1 = r.amplitude (5.0, 5.9, nouvelle);
+            const float a2 = r.amplitude (6.3, 7.2, ancienne), n2 = r.amplitude (6.3, 7.2, nouvelle);
+            logMessage ("  première moitié : ancienne " + juce::String (a1, 4) + ", nouvelle " + juce::String (n1, 4)
+                        + " ; seconde : ancienne " + juce::String (a2, 4) + ", nouvelle " + juce::String (n2, 4));
+            expect (n1 < 0.15f * a1, "première moitié : seule l'ancienne basse a ses graves"_fr);
+            expect (a2 < 0.15f * n2, "seconde moitié : seule la nouvelle basse a ses graves"_fr);
+            expect (r.rms (5.0, 5.9) > 0.5f * r.rms (1.5, 4.0), "le nouveau s'entend déjà (sans ses graves)"_fr);
+
+            const float sautNormal = juce::jmax (r.saut (4.5, 5.9), r.saut (6.3, 7.8));
+            logMessage ("  saut à la bascule " + juce::String (r.saut (5.9, 6.3), 4) + ", autour " + juce::String (sautNormal, 4));
+            expect (r.saut (5.9, 6.3) < 1.3f * sautNormal + 0.005f, "pas de craquement à la bascule des graves");
+            expectEquals (moteur.sceneJouee (1), 1);
+        }
+
+        beginTest ("Annuler un enchaînement en cours : retour à l'envers, sans trou"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauDEnchainement();
+            m.scenes[0].clips[2] = clipTenu ("Do", 60);
+            m.scenes[1].clips[2] = clipTenu ("Sol", 67);
+            Moteur moteur (engine, m, &banqueEssai());
+            Enregistrement r;
+
+            moteur.lancerScene (0);
+            r.jusqua (moteur, carte, 2.5);
+            moteur.lancerScene (1, enchainement (TypeEnchainement::fondu, 4));
+            r.jusqua (moteur, carte, 6.08);
+
+            const auto avantRetour = moteur.enchainementDeLaPiste (2);
+            expect (avantRetour && std::abs (avantRetour->avancee - 0.25f) < 0.05f);
+
+            moteur.lancerScene (0, enchainement (TypeEnchainement::fondu, 4));
+            const auto retour = moteur.enchainementDeLaPiste (2);
+            expect (retour && retour->annulation && retour->sceneVers == 0, "retour vers l'ancienne scène");
+            expectEquals (moteur.voixCourante (2), 0);
+
+            r.jusqua (moteur, carte, 7.0);
+            const auto enRoute = moteur.enchainementDeLaPiste (2);
+            expect (enRoute && enRoute->avancee > 0.3f && enRoute->avancee < 0.7f, "le retour prend le temps déjà fait : " + juce::String (enRoute ? enRoute->avancee : -1.0f));
+
+            r.jusqua (moteur, carte, 10.0);
+            expect (! moteur.enchainementDeLaPiste (2).has_value());
+            expectEquals (moteur.sceneJouee (2), 0);
+            expect (! moteur.etatCase (2, 1).joue, "le nouveau s'est arrêté"_fr);
+            expect (r.rmsMin (4.0, 10.0) > 0.7f * r.rmsMin (1.5, 4.0), "pas de trou");
+            const float sautNormal = r.saut (1.5, 4.0);
+            expect (r.saut (5.5, 8.5) < 1.3f * sautNormal + 0.005f, "pas de saut au retour");
+            expect (r.amplitude (8.5, 10.0, frequenceDeLaNote (67)) < 0.1f * r.amplitude (8.5, 10.0, frequenceDeLaNote (60)), "il ne reste que l'ancien");
+
+            // Annuler avant même le départ : rien ne change
+            r.jusqua (moteur, carte, 10.15);
+            moteur.lancerScene (1, enchainement (TypeEnchainement::filtre, 2));
+            r.jusqua (moteur, carte, 10.3);
+            moteur.lancerScene (0, enchainement (TypeEnchainement::filtre, 2));
+            expect (! moteur.enchainementDeLaPiste (2).has_value(), "enchaînement oublié"_fr);
+            expect (! moteur.etatCase (2, 1).departEnAttente, "le nouveau clip ne partira pas");
+            r.jusqua (moteur, carte, 13.0);
+            expectEquals (moteur.sceneJouee (2), 0);
+            expect (! moteur.etatCase (2, 1).joue);
+            expect (r.rmsMin (10.0, 13.0) > 0.9f * r.rmsMin (1.5, 4.0), "aucun changement de volume");
+        }
+
+        beginTest ("Batterie nette et clips communs aux deux scènes"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauDEnchainement();
+            m.scenes[0].clips[0] = Clip { "Kick", 1, { Note { 0.0, 0.25, 36, 110 }, Note { 2.0, 0.25, 36, 110 } } };
+            m.scenes[1].clips[0] = Clip { "Kick et caisse", 1, { Note { 0.0, 0.25, 36, 110 }, Note { 1.0, 0.25, 38, 110 } } };
+            m.scenes[0].clips[1] = clipTenu ("Basse commune", 36);
+            m.scenes[1].clips[1] = clipTenu ("Basse commune", 36);
+            m.scenes[0].clips[2] = clipTenu ("Do", 60);
+            m.scenes[1].clips[2] = clipTenu ("Sol", 67);
+            Moteur moteur (engine, m, &banqueEssai());
+            Enregistrement r;
+
+            moteur.lancerScene (0);
+            r.jusqua (moteur, carte, 2.5);
+            moteur.lancerScene (1, enchainement (TypeEnchainement::fondu, 2));
+
+            expect (! moteur.enchainementDeLaPiste (0).has_value(), "la batterie bascule net");
+            expect (moteur.etatCase (0, 1).departEnAttente);
+            expect (! moteur.enchainementDeLaPiste (1).has_value(), "la basse commune continue");
+            expect (! moteur.etatCase (1, 1).departEnAttente);
+            expect (moteur.enchainementDeLaPiste (2).has_value(), "la nappe se fond");
+
+            r.jusqua (moteur, carte, 4.3);
+            expectEquals (moteur.sceneJouee (0), 1);
+            expect (! moteur.etatCase (0, 0).joue, "l'ancienne batterie s'est arrêtée sur la mesure");
+            expectEquals (moteur.sceneJouee (1), 0);
+            expect (moteur.etatCase (2, 0).joue && moteur.etatCase (2, 1).joue);
+
+            // Sans batterie nette, la batterie se fond aussi
+            auto e = enchainement (TypeEnchainement::fondu, 1);
+            e.batterieNette = false;
+            moteur.lancerScene (0, e);
+            expect (moteur.enchainementDeLaPiste (0).has_value(), "la batterie se fond");
+        }
+
+        beginTest ("Queue d'écho : l'ancien s'éteint dans le delay par-dessus le nouveau"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauDEnchainement();
+            m.scenes[0].clips[2] = clipTenu ("Do", 60);
+            m.scenes[1].clips[2] = Clip { "Silence", 1, {} };
+            Moteur moteur (engine, m, &banqueEssai());
+            Enregistrement r;
+
+            moteur.lancerScene (0);
+            r.jusqua (moteur, carte, 2.5);
+            moteur.lancerScene (1, enchainement (TypeEnchainement::queueDEcho, 1, 1.0f));
+            r.jusqua (moteur, carte, 14.0);
+
+            const float avant = r.rms (2.0, 3.9);
+            const float queue = r.rms (6.5, 7.0);
+            const float fin = r.rms (13.0, 14.0);
+            logMessage ("  avant " + juce::String (avant, 3) + ", queue " + juce::String (queue, 4) + ", fin " + juce::String (fin, 5));
+            expect (r.rms (4.5, 5.5) > 0.1f * avant, "l'écho s'entend après la bascule"_fr);
+            expect (queue > 0.01f * avant, "la queue continue après l'arrêt de l'ancien clip"_fr);
+            expect (fin < 0.3f * queue, "puis elle s'éteint");
+            expect (crete (r.audio, 0) < 0.95f, "sans dépasser la protection");
+            expect (! moteur.etatCase (2, 0).joue);
+            expect (r.saut (3.9, 4.3) < 1.3f * r.saut (2.0, 3.9) + 0.005f, "la coupe du son direct ne craque pas");
+        }
+
+        beginTest ("Coupe pendant un enchaînement, changement de tempo, clic intact"_fr);
+        {
+            CarteSimulee carte (engine, 4);
+            auto m = morceauDEnchainement();
+            m.clic.actif = true;
+            m.musiqueDansCasqueDb = -60.0f;
+            m.scenes[0].clips[2] = clipTenu ("Do", 60);
+            m.scenes[1].clips[2] = clipTenu ("Sol", 67);
+            m.scenes[2].clips[2] = clipTenu ("Mi", 64);
+            Moteur moteur (engine, m, &banqueEssai());
+
+            moteur.lancerScene (0);
+            jouerEtAvancer (moteur, carte, (int) (2.5 * uneSeconde));
+            moteur.lancerScene (1, enchainement (TypeEnchainement::fondu, 4));
+            jouerEtAvancer (moteur, carte, 2 * uneSeconde);
+            moteur.modifier ([] (Morceau& mm) { mm.tempo = 130.0; });
+            jouerEtAvancer (moteur, carte, uneSeconde);
+            expect (moteur.enchainementDeLaPiste (2).has_value());
+
+            // Coupe vers une troisième scène : l'enchaînement se termine à la mesure suivante
+            moteur.lancerScene (2, enchainement (TypeEnchainement::coupe, 1));
+            jouerEtAvancer (moteur, carte, 3 * uneSeconde);
+            expect (! moteur.enchainementDeLaPiste (2).has_value(), "enchaînement terminé par la coupe"_fr);
+            expectEquals (moteur.sceneJouee (2), 2);
+            expect (! moteur.etatCase (2, 0).joue && ! moteur.etatCase (2, 1).joue);
+
+            // Le clic du casque pendant un enchaînement : rien ne change
+            moteur.modifier ([] (Morceau& mm) { mm.tempo = 120.0; });
+            moteur.lancerScene (0, enchainement (TypeEnchainement::filtre, 2));
+            jouerEtAvancer (moteur, carte, 3 * uneSeconde);
+            auto audio = carte.jouer (2 * uneSeconde);
+            DetecteurDeCoups detecteur;
+            detecteur.analyser (audio, 2);
+            expect (detecteur.coups.size() == 4, "4 coups de clic en 2 secondes : " + juce::String ((int) detecteur.coups.size()));
+            expect (moteur.enchainementDeLaPiste (2).has_value());
+        }
+
+        beginTest ("Page Enchaînement sur le bouton User"_fr);
+        {
+            using T = Evenement::Type;
+            CarteSimulee carte (engine, 2);
+            auto m = morceauDEnchainement();
+            m.scenes[0].clips[2] = clipTenu ("Do", 60);
+            m.scenes[1].clips[2] = clipTenu ("Sol", 67);
+            Moteur moteur (engine, m, &banqueEssai());
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            auto appui = [&] (Bouton b, bool bas) { surface.recevoir ({ T::bouton, (int) b, bas ? 127 : 0, bas }); };
+            auto bouton = [&] (Bouton b) { appui (b, true); appui (b, false); };
+            auto tourner = [&] (int encodeur, int pas) { surface.recevoir ({ T::encodeurTourne, encodeur, pas, false }); };
+
+            bouton (Bouton::user);
+            expect (pilote.getPage() == Pilote::Page::enchainement, "User : page Enchaînement"_fr);
+            expect (pilote.calculerEtat().boutons[(size_t) Bouton::user] == palette::blancFort);
+
+            tourner (0, 8);
+            expect (moteur.getMorceau().enchainement.type == TypeEnchainement::fondu, "encodeur 1 : le type");
+            tourner (1, -8);
+            expectEquals (moteur.getMorceau().enchainement.mesures, 2, "encodeur 2 : la durée"_fr);
+            tourner (2, -8);
+            expect (! moteur.getMorceau().enchainement.batterieNette, "encodeur 3 : batterie nette");
+            tourner (3, -20);
+            expectWithinAbsoluteError (moteur.getMorceau().enchainement.intensite, 0.5f, 0.001f, "encodeur 4 : l'intensité"_fr);
+
+            // User tenu + scène : retenir pour la scène, puis retirer
+            appui (Bouton::user, true);
+            bouton (Bouton::scene2);
+            appui (Bouton::user, false);
+            expect (moteur.getMorceau().scenes[1].entree == moteur.getMorceau().enchainement, "enchaînement retenu pour la scène 2"_fr);
+            appui (Bouton::user, true);
+            bouton (Bouton::scene2);
+            appui (Bouton::user, false);
+            expect (! moteur.getMorceau().scenes[1].entree.has_value(), "retiré au second appui");
+
+            // Lancer depuis la page : avec ce qu'elle montre
+            bouton (Bouton::scene1);
+            jouerEtAvancer (moteur, carte, (int) (2.5 * uneSeconde));
+            bouton (Bouton::scene2);
+            const auto e = moteur.enchainementDeLaPiste (2);
+            expect (e && e->type == TypeEnchainement::fondu, "scène lancée en fondu depuis la page"_fr);
+
+            juce::Image image (juce::Image::RGB, EtatSurface::largeurEcran, EtatSurface::hauteurEcran, true);
+            pilote.dessinerEcran (image);
+            jouerEtAvancer (moteur, carte, 3 * uneSeconde);
+            pilote.dessinerEcran (image);
+
+            // Ailleurs que sur la page, une scène sans enchaînement retenu prend celui du morceau ; une scène qui en a un, le sien
+            bouton (Bouton::mix);
+            moteur.modifier ([] (Morceau& mm) { mm.scenes[0].entree = enchainement (TypeEnchainement::coupe, 1); });
+            jouerEtAvancer (moteur, carte, 3 * uneSeconde);
+            bouton (Bouton::scene1);
+            expect (! moteur.enchainementDeLaPiste (2).has_value(), "la scène 1 entre en coupe, comme retenu");
+            expect (moteur.etatCase (2, 0).departEnAttente);
+        }
+    }
+};
+
 static EssaisModele essaisModele;
 static EssaisSorties essaisSorties;
 static EssaisHorloge essaisHorloge;
@@ -2754,10 +3304,11 @@ static EssaisGammes essaisGammes;
 static EssaisSurge essaisSurge;
 static EssaisMelodies essaisMelodies;
 static EssaisEffets essaisEffets;
+static EssaisEnchainements essaisEnchainements;
 
 } // namespace groovebox
 
-int main()
+int main (int argc, char* argv[])
 {
     juce::ScopedJuceInitialiser_GUI initialisationJuce;
     groovebox::surge::autoriser (false);    // seuls les essais du synthé chargent Surge XT : les autres vont bien plus vite
@@ -2774,7 +3325,17 @@ int main()
 
         juce::UnitTestRunner essais;
         essais.setAssertOnFailure (false);
-        essais.runTestsInCategory ("groovebox");
+        // Un nom de série en argument (par exemple « Enchaînements ») : seulement celle-là
+        if (const auto seule = juce::String::fromUTF8 (argc > 1 ? argv[1] : "").trim(); seule.isNotEmpty())
+        {
+            for (auto* e : juce::UnitTest::getAllTests())
+                if (e->getName() == seule)
+                    essais.runTests ({ e });
+        }
+        else
+        {
+            essais.runTestsInCategory ("groovebox");
+        }
 
         for (int i = 0; i < essais.getNumResults(); ++i)
             if (auto resultat = essais.getResult (i))

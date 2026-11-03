@@ -314,7 +314,7 @@ private:
                 }
             });
 
-            int plusRemplie = 0, nombreMax = -1;
+            int nombreMax = -1, secondMax = -1;
 
             for (int s = 0; s < (int) moteur.getMorceau().scenes.size(); ++s)
             {
@@ -325,8 +325,15 @@ private:
 
                 if (n > nombreMax)
                 {
+                    secondMax = nombreMax;
+                    secondeScene = plusRemplie;
                     nombreMax = n;
                     plusRemplie = s;
+                }
+                else if (n > secondMax)
+                {
+                    secondMax = n;
+                    secondeScene = s;
                 }
             }
 
@@ -350,6 +357,18 @@ private:
                     juce::Logger::writeToLog ("Diagnostic : coupure à la seconde "_fr + juce::String (secondes - restant + 1));
                 }
 
+            // Toutes les 4 secondes, un fondu d'une mesure vers l'autre scène, batterie comprise : les deux voix calculent ensemble
+            if ((secondes - restant) % 4 == 3 && secondeScene != plusRemplie)
+            {
+                Enchainement e;
+                e.type = TypeEnchainement::fondu;
+                e.mesures = 1;
+                e.batterieNette = false;
+                std::swap (plusRemplie, secondeScene);
+                moteur.lancerScene (plusRemplie, e);
+                ++enchainementsLances;
+            }
+
             if (--restant > 0)
                 return;
 
@@ -360,7 +379,8 @@ private:
                 bilan << carte->getName() << ", " << carte->getCurrentSampleRate() << " Hz, tampon "
                       << carte->getCurrentBufferSizeSamples() << ", coupures " << (carte->getXRunCount() - coupuresAuDepart)
                       << ", charge max " << juce::roundToInt (chargeMax * 100.0f) << " %, lecture "
-                      << (moteur.enLecture() ? "en cours" : "arrêtée"_fr) << ", mesure " << moteur.getPosition().mesure << ", " << clipsLances << " clips";
+                      << (moteur.enLecture() ? "en cours" : "arrêtée"_fr) << ", mesure " << moteur.getPosition().mesure << ", " << clipsLances << " clips, "
+                      << enchainementsLances << " fondus";
             else
                 bilan << "aucune carte son";
 
@@ -375,7 +395,7 @@ private:
         Moteur& moteur;
         int restant, secondes, coupuresAuDepart = 0, dernieresCoupures = 0;
         float chargeMax = 0.0f;
-        int clipsLances = 0;
+        int clipsLances = 0, plusRemplie = 0, secondeScene = 0, enchainementsLances = 0;
         Morceau morceauDeDepart;
     };
 

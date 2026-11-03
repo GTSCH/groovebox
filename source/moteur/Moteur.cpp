@@ -82,6 +82,7 @@ Moteur::Moteur (te::Engine& e, Morceau depart, BanqueDeSons* banqueFournie)  : e
     engine.getPluginManager().createBuiltInType<DistorsionPlugin>();
     engine.getPluginManager().createBuiltInType<PunchPlugin>();
     engine.getPluginManager().createBuiltInType<GravePlugin>();
+    engine.getPluginManager().createBuiltInType<VoixPlugin>();
     contraindre (morceau);
 
     edit = te::Edit::createSingleTrackEdit (engine);
@@ -106,8 +107,9 @@ Moteur::Moteur (te::Engine& e, Morceau depart, BanqueDeSons* banqueFournie)  : e
 
     clipDuClic = pisteCasque->insertMIDIClip ("Clic", { te::TimePosition(), te::TimeDuration::fromSeconds (dureeDuClipDuClic) }, nullptr);
 
-    // Les 8 pistes : un dossier (volume, panoramique, mute, solo, envoi au casque) qui contient les voix A et B.
-    // La voix B sert aux enchaînements (étape 8) : à l'étape 4, elle a son instrument mais ne joue jamais.
+    // Les 8 pistes : un dossier (effets, volume, panoramique, mute, solo, envois) qui contient les voix A et B.
+    // Pendant un enchaînement, l'ancien clip joue sur une voix et le nouveau sur l'autre ; chaque voix finit par son
+    // réglage d'enchaînement (volume, filtres), précédé de ses envois pour la queue d'écho.
     te::Track* precedente = pisteCasque;
 
     for (int i = 0; i < nombreDePistes; ++i)
@@ -125,6 +127,17 @@ Moteur::Moteur (te::Engine& e, Morceau depart, BanqueDeSons* banqueFournie)  : e
             v->playSlotClips = true;
             pm.instruments[(size_t) k] = ajouterPlugin<InstrumentProvisoire> (*v, 0);
             pm.batteries[(size_t) k] = ajouterPlugin<BatteriePlugin> (*v, 1);
+
+            for (int e = 0; e < 2; ++e)
+            {
+                auto envoi = ajouterPlugin<te::AuxSendPlugin> (*v, -1);
+                envoi->busNumber = e + 1;
+                envoi->setGainDb (-100.0f);
+                pm.envoisDesVoix[(size_t) k][(size_t) e] = envoi;
+            }
+
+            pm.reglagesDesVoix[(size_t) k] = ajouterPlugin<VoixPlugin> (*v, -1);
+            pm.reglagesDesVoix[(size_t) k]->reposer (k == 0 ? 1.0f : 0.0f);
         }
 
         pm.volume = pm.dossier->getVolumePlugin();
@@ -360,8 +373,8 @@ void Moteur::appliquerPistes (const Morceau& ancien, bool tout)
         {
             bool surgePret = false;
 
-            // Surge sur la voix A seulement : la voix B recevra le sien avec les enchaînements (étape 8)
-            if (k == 0 && ! batterie && son != nullptr && surge::trouver (engine))
+            // Un Surge par voix, avec les mêmes réglages : celui de la voix libre se repose
+            if (! batterie && son != nullptr && surge::trouver (engine))
             {
                 const bool nouveau = pm.surges[(size_t) k] == nullptr;
 
@@ -387,10 +400,6 @@ void Moteur::appliquerPistes (const Morceau& ancien, bool tout)
                 }
             }
 
-            // La voix B garde les réglages mais reste éteinte : elle ne servira qu'aux enchaînements (étape 8)
-            if (pm.surges[(size_t) k] != nullptr)
-                pm.surges[(size_t) k]->setEnabled (surgePret && k == 0);
-
             pm.instruments[(size_t) k]->son = (int) p.son;
             pm.instruments[(size_t) k]->setEnabled (! batterie && ! surgePret);
             pm.batteries[(size_t) k]->setEnabled (batterie);
@@ -399,6 +408,7 @@ void Moteur::appliquerPistes (const Morceau& ancien, bool tout)
                 pm.batteries[(size_t) k]->appliquerKit (p.kit, *banque);
         }
 
+        appliquerSurges (i);
         appliquerEffets (i, ancien, tout);
         pm.envoiDelay->setGainDb (momentanes[(size_t) i] ? 0.0f : p.envoiDelayDb);
         pm.envoiReverb->setGainDb (p.envoiReverbDb);
@@ -420,9 +430,9 @@ void Moteur::assurerCases()
             v->getClipSlotList().ensureNumberOfSlots (n);
 }
 
-te::MidiClip* Moteur::clipDeLaCase (int piste, int scene) const
+te::MidiClip* Moteur::clipDeLaCase (int piste, int scene, int voix) const
 {
-    auto cases = pistesMoteur[(size_t) piste].voix[0]->getClipSlotList().getClipSlots();
+    auto cases = pistesMoteur[(size_t) piste].voix[(size_t) voix]->getClipSlotList().getClipSlots();
 
     if (scene < 0 || scene >= cases.size() || cases[scene] == nullptr)
         return nullptr;
@@ -449,8 +459,15 @@ void Moteur::appliquerCases (const Morceau& ancien, bool tout)
 
 void Moteur::appliquerCase (int piste, int scene)
 {
+    // Chaque clip existe sur les deux voix : l'enchaînement peut le lancer sur celle qui est libre
+    for (int v = 0; v < 2; ++v)
+        appliquerCaseSurLaVoix (piste, scene, v);
+}
+
+void Moteur::appliquerCaseSurLaVoix (int piste, int scene, int voix)
+{
     const auto* modele = morceau.clip (piste, scene);
-    auto* existant = clipDeLaCase (piste, scene);
+    auto* existant = clipDeLaCase (piste, scene, voix);
 
     if (modele == nullptr)
     {
@@ -467,7 +484,7 @@ void Moteur::appliquerCase (int piste, int scene)
 
     if (existant == nullptr)
     {
-        auto cases = pistesMoteur[(size_t) piste].voix[0]->getClipSlotList().getClipSlots();
+        auto cases = pistesMoteur[(size_t) piste].voix[(size_t) voix]->getClipSlotList().getClipSlots();
 
         if (scene >= cases.size())
             return;
@@ -666,8 +683,8 @@ void Moteur::filtreGlobal (float position)
 
 bool Moteur::joueAvecSurge (int piste) const
 {
-    const auto& pm = pistesMoteur[(size_t) piste];
-    return pm.surges[0] != nullptr && pm.surges[0]->isEnabled();
+    const auto& s = pistesMoteur[(size_t) piste].surges[(size_t) voixCourantes[(size_t) piste]];
+    return s != nullptr && s->isEnabled();
 }
 
 std::vector<double> Moteur::debutsJoues (int piste, int scene) const
@@ -685,13 +702,16 @@ std::vector<double> Moteur::debutsJoues (int piste, int scene) const
 //==============================================================================
 void Moteur::jouerNote (int piste, int note, int velocite)
 {
-    if (auto v = pistesMoteur[(size_t) juce::jlimit (0, nombreDePistes - 1, piste)].voix[0])
+    piste = juce::jlimit (0, nombreDePistes - 1, piste);
+
+    if (auto v = pistesMoteur[(size_t) piste].voix[(size_t) voixCourantes[(size_t) piste]])
         v->injectLiveMidiMessage (juce::MidiMessage::noteOn (1, note, (juce::uint8) juce::jlimit (1, 127, velocite)), {});
 }
 
 void Moteur::relacherNote (int piste, int note)
 {
-    if (auto v = pistesMoteur[(size_t) juce::jlimit (0, nombreDePistes - 1, piste)].voix[0])
+    // Relâchée sur les deux voix : la voix courante a pu changer pendant que la note était tenue
+    for (auto* v : pistesMoteur[(size_t) juce::jlimit (0, nombreDePistes - 1, piste)].voix)
         v->injectLiveMidiMessage (juce::MidiMessage::noteOff (1, note), {});
 }
 
@@ -702,7 +722,7 @@ std::optional<double> Moteur::positionDansLeClip (int piste) const
     if (scene < 0)
         return std::nullopt;
 
-    auto* c = clipDeLaCase (piste, scene);
+    auto* c = clipDeLaCase (piste, scene, voixQuiJoue (piste, scene));
     const auto* modele = morceau.clip (piste, scene);
 
     if (c == nullptr || modele == nullptr)
@@ -738,7 +758,7 @@ double Moteur::longueurDuCalage() const
     return parMesure;
 }
 
-std::optional<te::MonotonicBeat> Moteur::prochainCalage (std::optional<double> tempsVise) const
+std::optional<Moteur::Instant> Moteur::prochainCalage (std::optional<double> tempsVise) const
 {
     auto contexte = edit->getCurrentPlaybackContext();
 
@@ -769,16 +789,16 @@ std::optional<te::MonotonicBeat> Moteur::prochainCalage (std::optional<double> t
         vise = mesure1 + (std::floor ((maintenant - mesure1) / longueur + 1.0e-9) + 1.0) * longueur;
     }
 
-    return te::MonotonicBeat { point->monotonicBeat.v + te::BeatDuration::fromBeats (vise - maintenant) };
+    return Instant { te::MonotonicBeat { point->monotonicBeat.v + te::BeatDuration::fromBeats (vise - maintenant) }, vise };
 }
 
-void Moteur::lancerMaintenant (int piste, int scene, te::MonotonicBeat quand)
+void Moteur::lancerSurLaVoix (int piste, int voix, int scene, te::MonotonicBeat quand)
 {
     const int n = juce::jmax (8, (int) morceau.scenes.size());
 
     for (int s = 0; s < n; ++s)
     {
-        auto* c = clipDeLaCase (piste, s);
+        auto* c = clipDeLaCase (piste, s, voix);
 
         if (c == nullptr)
             continue;
@@ -792,17 +812,44 @@ void Moteur::lancerMaintenant (int piste, int scene, te::MonotonicBeat quand)
     }
 }
 
-void Moteur::arreterMaintenant (int piste, std::optional<te::MonotonicBeat> quand)
+void Moteur::arreterLaVoix (int piste, int voix, std::optional<te::MonotonicBeat> quand)
 {
     const int n = juce::jmax (8, (int) morceau.scenes.size());
 
     for (int s = 0; s < n; ++s)
-        if (auto* c = clipDeLaCase (piste, s))
+        if (auto* c = clipDeLaCase (piste, s, voix))
             if (auto lh = c->getLaunchHandle(); estEnCours (lh))
                 lh->stop (quand);
 }
 
-void Moteur::lancerClip (int piste, int scene)
+void Moteur::arreterMaintenant (int piste, std::optional<te::MonotonicBeat> quand)
+{
+    for (int v = 0; v < 2; ++v)
+        arreterLaVoix (piste, v, quand);
+}
+
+int Moteur::sceneSurLaVoix (int piste, int voix) const
+{
+    for (int s = 0; s < (int) morceau.scenes.size(); ++s)
+        if (auto* c = clipDeLaCase (piste, s, voix); c != nullptr && estEnCours (c->getLaunchHandle()))
+            return s;
+
+    return -1;
+}
+
+int Moteur::voixQuiJoue (int piste, int scene) const
+{
+    const int courante = voixCourantes[(size_t) piste];
+
+    for (int v : { courante, 1 - courante })
+        if (auto* c = clipDeLaCase (piste, scene, v))
+            if (c->getLaunchHandle()->getPlayingStatus() == te::LaunchHandle::PlayState::playing)
+                return v;
+
+    return courante;
+}
+
+void Moteur::lancerClip (int piste, int scene, std::optional<Enchainement> choisi)
 {
     if (morceau.clip (piste, scene) == nullptr)
     {
@@ -822,15 +869,291 @@ void Moteur::lancerClip (int piste, int scene)
         return;
     }
 
-    if (auto quand = prochainCalage())
-        lancerMaintenant (piste, scene, *quand);
+    enchainer (piste, scene, choisi.value_or (morceau.enchainement));
 }
 
-void Moteur::lancerScene (int scene)
+void Moteur::lancerScene (int scene, std::optional<Enchainement> choisi)
 {
+    if (scene < 0 || scene >= (int) morceau.scenes.size())
+        return;
+
+    const auto e = choisi ? *choisi : morceau.scenes[(size_t) scene].entree.value_or (morceau.enchainement);
+    const bool joue = enLecture() && ! demarrageEnAttente;
+
     for (int p = 0; p < nombreDePistes; ++p)
-        if (morceau.clip (p, scene) != nullptr)
-            lancerClip (p, scene);      // une case vide laisse la piste continuer
+    {
+        const auto* clip = morceau.clip (p, scene);
+
+        if (clip == nullptr)
+            continue;      // une case vide laisse la piste continuer
+
+        // Dans un enchaînement, une piste dont le clip ne change pas continue sans rien changer
+        if (joue && ! e.coupeNette (morceau.pistes[(size_t) p].estUneBatterie()))
+        {
+            const auto& t = enchainements[(size_t) p];
+            const int actuelle = t.enCours ? t.sceneVisee() : sceneSurLaVoix (p, voixCourantes[(size_t) p]);
+            const auto* clipActuel = morceau.clip (p, actuelle);
+
+            if (actuelle >= 0 && clipActuel != nullptr && (actuelle == scene || *clipActuel == *clip))
+                continue;
+        }
+
+        lancerClip (p, scene, e);
+    }
+}
+
+//==============================================================================
+float Moteur::EnchainementDePiste::avancee (double temps) const
+{
+    if (fin <= debut)
+        return temps >= debut ? pFin : pDebut;
+
+    return pDebut + (pFin - pDebut) * (float) juce::jlimit (0.0, 1.0, (temps - debut) / (fin - debut));
+}
+
+double Moteur::tempsActuel() const
+{
+    return edit->tempoSequence.toBeats (positionExacte()).inBeats();
+}
+
+double Moteur::margeDuFilPrincipal() const
+{
+    // Le fil audio calcule un peu en avance : un changement décidé maintenant prend effet juste après
+    return 0.03 * morceau.tempo / 60.0 * morceau.mesure.denominateur / 4.0;
+}
+
+void Moteur::enchainer (int piste, int scene, const Enchainement& e)
+{
+    auto instant = prochainCalage();
+
+    if (! instant)
+        return;
+
+    auto& t = enchainements[(size_t) piste];
+    const bool nette = e.coupeNette (morceau.pistes[(size_t) piste].estUneBatterie());
+    const double maintenant = tempsActuel() + margeDuFilPrincipal();
+
+    // Relancer le clip qu'on est en train de quitter : l'enchaînement repart à l'envers
+    if (t.enCours && ! nette && scene == t.sceneQuittee())
+        return annulerEnchainement (piste);
+
+    if (nette)
+    {
+        // Coupe : un enchaînement en cours se termine au calage, puis le nouveau clip part sur la voix courante
+        if (t.enCours)
+        {
+            if (maintenant < t.debut)
+            {
+                t.debut = t.fin = instant->temps;
+            }
+            else
+            {
+                t.pDebut = t.avancee (maintenant);
+                t.debut = maintenant;
+                t.fin = juce::jmax (maintenant, instant->temps);
+            }
+
+            programmerLesVoix (piste);
+            arreterLaVoix (piste, 1 - voixCourantes[(size_t) piste], instant->monotone);
+        }
+
+        lancerSurLaVoix (piste, voixCourantes[(size_t) piste], scene, instant->monotone);
+        return;
+    }
+
+    // Le nouveau clip part sur la voix libre ; un reste d'enchaînement précédent s'y arrête au même instant
+    const int sortante = voixCourantes[(size_t) piste];
+    const int entrante = 1 - sortante;
+
+    t.enCours = true;
+    t.voixSortante = sortante;
+    t.voixEntrante = entrante;
+    t.sceneSortante = sceneSurLaVoix (piste, sortante);
+    t.sceneEntrante = scene;
+    t.debut = instant->temps;
+    t.duree = (double) e.mesures * morceau.mesure.numerateur;
+    t.fin = t.debut + t.duree;
+    t.pDebut = 0.0f;
+    t.pFin = 1.0f;
+    t.type = e.type;
+    t.intensite = e.intensite;
+
+    voixCourantes[(size_t) piste] = entrante;
+    appliquerSurges (piste);
+    reglerEnvoisDeVoix (piste, entrante, 0.0f);
+    programmerLesVoix (piste);
+    lancerSurLaVoix (piste, entrante, scene, instant->monotone);
+
+    if (! demarrageEnAttente)
+        startTimer (10);
+}
+
+void Moteur::annulerEnchainement (int piste)
+{
+    auto& t = enchainements[(size_t) piste];
+    const double maintenant = tempsActuel() + margeDuFilPrincipal();
+
+    if (maintenant < t.debut)
+    {
+        // Pas encore commencé : on oublie tout, le clip prévu ne part pas
+        arreterLaVoix (piste, t.voixEntrante, std::nullopt);
+        voixCourantes[(size_t) piste] = t.voixSortante;
+        t.enCours = false;
+        reposerLesVoix (piste);
+        appliquerSurges (piste);
+        return;
+    }
+
+    if (t.type == TypeEnchainement::queueDEcho)
+    {
+        // À l'envers, c'est le nouveau qui part dans l'écho pendant que l'ancien revient
+        std::swap (t.voixSortante, t.voixEntrante);
+        std::swap (t.sceneSortante, t.sceneEntrante);
+        reglerEnvoisDeVoix (piste, t.voixEntrante, 0.0f);
+        t.debut = maintenant;
+        t.fin = maintenant + t.duree;
+        t.pDebut = 0.0f;
+        t.pFin = 1.0f;
+    }
+    else
+    {
+        // Les deux voix refont le même chemin en sens inverse, depuis là où elles en sont
+        const float p = t.avancee (maintenant);
+        const float cible = t.pFin > 0.5f ? 0.0f : 1.0f;
+        t.debut = maintenant;
+        t.fin = maintenant + t.duree * std::abs (p - cible);
+        t.pDebut = p;
+        t.pFin = cible;
+    }
+
+    voixCourantes[(size_t) piste] = t.voixFinale();
+    programmerLesVoix (piste);
+}
+
+void Moteur::terminerEnchainement (int piste)
+{
+    auto& t = enchainements[(size_t) piste];
+    const int finale = t.voixFinale();
+
+    arreterLaVoix (piste, 1 - finale, std::nullopt);
+    voixCourantes[(size_t) piste] = finale;
+    t.enCours = false;
+    reposerLesVoix (piste);
+    appliquerSurges (piste);
+}
+
+void Moteur::programmerLesVoix (int piste)
+{
+    const auto& t = enchainements[(size_t) piste];
+    auto& pm = pistesMoteur[(size_t) piste];
+    auto enSecondes = [this] (double temps) { return edit->tempoSequence.toTime (te::BeatPosition::fromBeats (temps)).inSeconds(); };
+
+    TrajetDeVoix trajet { enSecondes (t.debut), enSecondes (t.fin), t.pDebut, t.pFin, t.type, false, t.intensite };
+    pm.reglagesDesVoix[(size_t) t.voixSortante]->programmer (trajet);
+    trajet.entrante = true;
+    pm.reglagesDesVoix[(size_t) t.voixEntrante]->programmer (trajet);
+}
+
+void Moteur::reposerLesVoix (int piste)
+{
+    auto& pm = pistesMoteur[(size_t) piste];
+    const int courante = voixCourantes[(size_t) piste];
+
+    for (int v = 0; v < 2; ++v)
+    {
+        pm.reglagesDesVoix[(size_t) v]->reposer (v == courante ? 1.0f : 0.0f);
+        reglerEnvoisDeVoix (piste, v, 0.0f);
+    }
+}
+
+void Moteur::reglerEnvoisDeVoix (int piste, int voix, float niveau)
+{
+    auto& pm = pistesMoteur[(size_t) piste];
+    const float db = niveau > 0.001f ? juce::Decibels::gainToDecibels (niveau) : -100.0f;
+
+    for (int e = 0; e < 2; ++e)
+    {
+        auto& dernier = pm.niveauxDesEnvois[(size_t) voix][(size_t) e];
+
+        if (std::abs (dernier - db) > 0.25f)
+        {
+            dernier = db;
+            pm.envoisDesVoix[(size_t) voix][(size_t) e]->setGainDb (db);
+        }
+    }
+}
+
+void Moteur::appliquerSurges (int piste)
+{
+    // Le Surge de la voix libre se repose ; pendant un enchaînement, les deux jouent
+    auto& pm = pistesMoteur[(size_t) piste];
+    const auto& p = morceau.pistes[(size_t) piste];
+    const bool synthe = ! p.estUneBatterie() && sonsDeSynthe::trouver (p.sonDeSynthe) != nullptr;
+
+    for (int k = 0; k < 2; ++k)
+        if (auto& s = pm.surges[(size_t) k]; s != nullptr && pm.pilotesSurge[(size_t) k] != nullptr)
+            s->setEnabled (synthe && (k == voixCourantes[(size_t) piste] || enchainements[(size_t) piste].enCours));
+}
+
+void Moteur::suivreLesEnchainements()
+{
+    if (! enLecture())
+        return;
+
+    const double maintenant = tempsActuel();
+
+    for (int p = 0; p < nombreDePistes; ++p)
+    {
+        auto& t = enchainements[(size_t) p];
+
+        if (! t.enCours)
+            continue;
+
+        // Queue d'écho : la voix sortante part dans le delay et la réverbération dès le temps qui précède la bascule
+        if (t.type == TypeEnchainement::queueDEcho)
+        {
+            const auto f = formeDeLaVoix (t.type, false, t.avancee (maintenant), t.intensite);
+            reglerEnvoisDeVoix (p, t.voixSortante, maintenant >= t.debut - 1.0 ? f.envoi : 0.0f);
+        }
+
+        if (maintenant >= t.fin + 0.05)
+            terminerEnchainement (p);
+    }
+}
+
+std::optional<EtatEnchainement> Moteur::enchainementDeLaPiste (int piste) const
+{
+    const auto& t = enchainements[(size_t) piste];
+
+    if (! t.enCours)
+        return std::nullopt;
+
+    const double maintenant = enLecture() ? tempsActuel() : t.debut;
+    EtatEnchainement e;
+    e.sceneDe = t.sceneQuittee();
+    e.sceneVers = t.sceneVisee();
+    e.type = t.type;
+    e.enAttente = maintenant < t.debut;
+    e.annulation = t.pFin < 0.5f;
+    // Un retour se montre comme un trajet à lui : de 0 à 1 entre l'annulation et l'arrivée
+    const float p = t.avancee (maintenant);
+    e.avancee = e.annulation ? (t.pDebut > 0.0f ? (t.pDebut - p) / t.pDebut : 1.0f) : p;
+    return e;
+}
+
+std::optional<EtatEnchainement> Moteur::enchainementEnCours() const
+{
+    std::optional<EtatEnchainement> plusRecent;
+    double debut = -1.0e9;
+
+    for (int p = 0; p < nombreDePistes; ++p)
+        if (auto e = enchainementDeLaPiste (p); e && enchainements[(size_t) p].debut > debut)
+        {
+            plusRecent = e;
+            debut = enchainements[(size_t) p].debut;
+        }
+
+    return plusRecent;
 }
 
 void Moteur::arreterPiste (int piste)
@@ -843,7 +1166,10 @@ void Moteur::arreterPiste (int piste)
     }
 
     if (enLecture())
-        arreterMaintenant (piste, prochainCalage());
+    {
+        const auto instant = prochainCalage();
+        arreterMaintenant (piste, instant ? std::optional (instant->monotone) : std::nullopt);
+    }
 }
 
 void Moteur::arreterTousLesClips()
@@ -855,38 +1181,72 @@ void Moteur::arreterTousLesClips()
 EtatCase Moteur::etatCase (int piste, int scene) const
 {
     EtatCase e;
-    auto* c = clipDeLaCase (piste, scene);
 
-    if (c == nullptr || morceau.clip (piste, scene) == nullptr)
+    if (morceau.clip (piste, scene) == nullptr)
         return e;
 
-    e.clip = true;
-    auto lh = c->getLaunchHandle();
-    const auto attente = lh->getQueuedStatus();
-    e.joue = lh->getPlayingStatus() == te::LaunchHandle::PlayState::playing;
-    e.departEnAttente = attente == te::LaunchHandle::QueueState::playQueued
+    for (int v = 0; v < 2; ++v)
+    {
+        auto* c = clipDeLaCase (piste, scene, v);
+
+        if (c == nullptr)
+            continue;
+
+        e.clip = true;
+        auto lh = c->getLaunchHandle();
+        const auto attente = lh->getQueuedStatus();
+        e.joue = e.joue || lh->getPlayingStatus() == te::LaunchHandle::PlayState::playing;
+        e.departEnAttente = e.departEnAttente || attente == te::LaunchHandle::QueueState::playQueued;
+        e.arretEnAttente = e.arretEnAttente || attente == te::LaunchHandle::QueueState::stopQueued;
+    }
+
+    e.departEnAttente = e.departEnAttente
                         || std::find (lancementsAuDemarrage.begin(), lancementsAuDemarrage.end(), std::pair { piste, scene }) != lancementsAuDemarrage.end();
-    e.arretEnAttente = attente == te::LaunchHandle::QueueState::stopQueued;
+
+    // Le clip qu'un enchaînement est en train d'effacer
+    if (const auto& t = enchainements[(size_t) piste]; t.enCours && t.sceneQuittee() == scene && e.joue)
+        e.arretEnAttente = true;
+
     return e;
 }
 
 int Moteur::sceneJouee (int piste) const
 {
-    for (int s = 0; s < (int) morceau.scenes.size(); ++s)
-        if (etatCase (piste, s).joue)
-            return s;
+    // D'abord la voix courante (le clip qui reste), puis l'autre (celui qui s'efface)
+    const int courante = voixCourantes[(size_t) piste];
+
+    for (int v : { courante, 1 - courante })
+        for (int s = 0; s < (int) morceau.scenes.size(); ++s)
+            if (auto* c = clipDeLaCase (piste, s, v); c != nullptr && morceau.clip (piste, s) != nullptr
+                                                     && c->getLaunchHandle()->getPlayingStatus() == te::LaunchHandle::PlayState::playing)
+                return s;
 
     return -1;
 }
 
 void Moteur::avancer()
 {
-    if (! demarrageEnAttente)
+    if (demarrageEnAttente)
+        avancerLeDemarrage();
+
+    suivreLesEnchainements();
+
+    if (demarrageEnAttente)
+        return;
+
+    if (std::any_of (enchainements.begin(), enchainements.end(), [] (auto& t) { return t.enCours; }))
+    {
+        if (getTimerInterval() != 10)
+            startTimer (10);
+    }
+    else
     {
         stopTimer();
-        return;
     }
+}
 
+void Moteur::avancerLeDemarrage()
+{
     auto contexte = edit->getCurrentPlaybackContext();
     const auto point = contexte != nullptr ? contexte->getSyncPoint() : std::nullopt;
 
@@ -906,11 +1266,10 @@ void Moteur::avancer()
     // Pendant le décompte, prochainCalage() vise la mesure 1
     for (auto [piste, scene] : lancementsAuDemarrage)
         if (auto quand = prochainCalage())
-            lancerMaintenant (piste, scene, *quand);
+            lancerSurLaVoix (piste, voixCourantes[(size_t) piste], scene, quand->monotone);
 
     lancementsAuDemarrage.clear();
     demarrageEnAttente = false;
-    stopTimer();
 }
 
 void Moteur::appliquerTempo()
@@ -929,6 +1288,11 @@ void Moteur::appliquerTempo()
 
     if (delay != nullptr)
         delay->tempo = (float) morceau.tempo;
+
+    // Les enchaînements sont comptés en temps : leurs instants en secondes changent avec le tempo
+    for (int p = 0; p < nombreDePistes; ++p)
+        if (enchainements[(size_t) p].enCours)
+            programmerLesVoix (p);
 }
 
 void Moteur::ramenerTempoAUnSeul()
@@ -994,7 +1358,13 @@ void Moteur::lancer()
     if (transport.isPlaying())
     {
         for (int p = 0; p < nombreDePistes; ++p)
+        {
             arreterMaintenant (p, std::nullopt);
+            enchainements[(size_t) p].enCours = false;
+            voixCourantes[(size_t) p] = 0;
+            reposerLesVoix (p);
+            appliquerSurges (p);
+        }
 
         transport.stop (false, false);
     }
@@ -1024,7 +1394,13 @@ void Moteur::arreter()
     stopTimer();
 
     for (int p = 0; p < nombreDePistes; ++p)
+    {
         arreterMaintenant (p, std::nullopt);
+        enchainements[(size_t) p].enCours = false;
+        voixCourantes[(size_t) p] = 0;
+        reposerLesVoix (p);
+        appliquerSurges (p);
+    }
 
     edit->getTransport().stop (false, false);
     ramenerTempoAUnSeul();

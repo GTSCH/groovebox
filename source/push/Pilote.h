@@ -25,7 +25,7 @@ public:
     void dessinerEcran (juce::Image&) const;
 
     enum class Page { mix, clic, device, generateur, commun, variation, browse, gamme, macros, melodie, communSynthe,
-                      envoisDelay, envoisReverb, departs, effet, ajoutEffet };
+                      envoisDelay, envoisReverb, departs, effet, ajoutEffet, enchainement };
     enum class Mode { session, note };
     Page getPage() const                    { return page; }
     Mode getMode() const                    { return mode; }
@@ -84,7 +84,7 @@ private:
     std::array<bool, nombreEncodeurs> touches {};
     std::array<int, nombreEncodeurs> crans {};
     std::array<Reglage, 8> pageClic, pageMix, pageDevice, pageBrowse, pageEuclide, pageCartes, pageCommun, pageVariation, pageGamme, pageMacros, pageMelodie, pageCommunSynthe,
-                           pageEnvoisDelay, pageEnvoisReverb, pageDeparts, pageEffet, pageAjout;
+                           pageEnvoisDelay, pageEnvoisReverb, pageDeparts, pageEffet, pageAjout, pageEnchainement;
     int emplacementEffet = 0, typeAAjouter = 0, emplacementAAjouter = 0;
     int voixEuclidienne = 0;
     bool varierEnDupliquant = false;
@@ -111,6 +111,7 @@ private:
             case Page::departs: return pageDeparts;
             case Page::effet:   return pageEffet;
             case Page::ajoutEffet: return pageAjout;
+            case Page::enchainement: return pageEnchainement;
             case Page::generateur:
             {
                 const auto* g = generateurVise();

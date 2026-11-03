@@ -26,6 +26,16 @@ namespace
     }
 
     constexpr double dureeDUneAnnonce = 1500.0;
+
+    juce::String nomDeLaDuree (int mesures)
+    {
+        return juce::String (mesures) + (mesures == 1 ? " mesure" : " mesures");
+    }
+
+    juce::String decrire (const Enchainement& e)
+    {
+        return e.type == TypeEnchainement::coupe ? nomDeLEnchainement (e.type) : nomDeLEnchainement (e.type) + ", " + nomDeLaDuree (e.mesures);
+    }
 }
 
 Pilote::Pilote (Moteur& m, Surface& s)  : moteur (m), surface (s)
@@ -226,6 +236,35 @@ Pilote::Pilote (Moteur& m, Surface& s)  : moteur (m), surface (s)
     pageDeparts[5] = reglageDepart ("Rév. durée"_fr, [] (Morceau& m) -> float& { return m.reverb.duree; }, 1.0f, 5);
     pageDeparts[6] = reglageDepart ("Rév. couleur"_fr, [] (Morceau& m) -> float& { return m.reverb.couleur; }, 1.0f, 6);
     pageDeparts[7] = reglageDepart ("Compression", [] (Morceau& m) -> float& { return m.compressionDeSortie; }, 1.0f, 7);
+
+    // Page Enchaînement (bouton User) : l'enchaînement du morceau, pour les clips et les scènes sans enchaînement retenu
+    auto changerEnchainement = [this] (int encodeur, std::function<void (Enchainement&)> f)
+    {
+        moteur.modifier ([f] (Morceau& m) { f (m.enchainement); }, "enchainement " + juce::String (encodeur));
+    };
+
+    pageEnchainement[0] = { "Type", [this] { return nomDeLEnchainement (moteur.getMorceau().enchainement.type); },
+                            [this] { return (float) moteur.getMorceau().enchainement.type / (float) (nombreDeTypesDEnchainement - 1); },
+                            [this, changerEnchainement] (int pas, bool) { if (auto c = crantsDiscrets (0, pas)) changerEnchainement (0, [c] (Enchainement& e) {
+                                e.type = (TypeEnchainement) juce::jlimit (0, nombreDeTypesDEnchainement - 1, (int) e.type + c); }); }, premier };
+
+    pageEnchainement[1] = { "Durée"_fr, [this] { return nomDeLaDuree (moteur.getMorceau().enchainement.mesures); },
+                            [this] {
+                                const auto& d = Enchainement::dureesPossibles;
+                                return (float) (std::find (d.begin(), d.end(), moteur.getMorceau().enchainement.mesures) - d.begin()) / (float) (d.size() - 1); },
+                            [this, changerEnchainement] (int pas, bool) { if (auto c = crantsDiscrets (1, pas)) changerEnchainement (1, [c] (Enchainement& e) {
+                                const auto& d = Enchainement::dureesPossibles;
+                                const int i = (int) (std::find (d.begin(), d.end(), e.mesures) - d.begin());
+                                e.mesures = d[(size_t) juce::jlimit (0, (int) d.size() - 1, i + c)]; }); }, premier };
+
+    pageEnchainement[2] = { "Batterie nette", [this] { return moteur.getMorceau().enchainement.batterieNette ? juce::String ("Oui") : juce::String ("Non"); },
+                            [this] { return moteur.getMorceau().enchainement.batterieNette ? 1.0f : 0.0f; },
+                            [this, changerEnchainement] (int pas, bool) { if (auto c = crantsDiscrets (2, pas)) changerEnchainement (2, [c] (Enchainement& e) { e.batterieNette = c > 0; }); }, premier };
+
+    pageEnchainement[3] = { "Intensité"_fr, [this, pourcent] { return pourcent (moteur.getMorceau().enchainement.intensite); },
+                            [this] { return moteur.getMorceau().enchainement.intensite; },
+                            [changerEnchainement] (int pas, bool fin) { changerEnchainement (3, [=] (Enchainement& e) {
+                                e.intensite = juce::jlimit (0.0f, 1.0f, e.intensite + (float) pas * (fin ? 0.002f : 0.01f)); }); }, premier };
 
     // Page d'un effet d'insertion : ses réglages (1 à 4), et l'encodeur 8 pour le sauter
     for (int k = 0; k < 4; ++k)
@@ -911,8 +950,23 @@ void Pilote::appuyerScene (int scene)
         return;
     }
 
-    moteur.lancerScene (scene);
-    annoncer ("Scène "_fr + juce::String (scene + 1), morceau.scenes[(size_t) scene].nom);
+    // User tenu : retenir l'enchaînement de la page pour entrer dans cette scène (ou le retirer s'il y est déjà)
+    if (tenu (Bouton::user))
+    {
+        moteur.modifier ([=] (Morceau& m) {
+            auto& entree = m.scenes[(size_t) scene].entree;
+            if (entree && *entree == m.enchainement) entree.reset(); else entree = m.enchainement; });
+
+        const auto& entree = moteur.getMorceau().scenes[(size_t) scene].entree;
+        annoncer (morceau.scenes[(size_t) scene].nom, entree ? "Entrée : "_fr + decrire (*entree) : juce::String ("Entrée : celle de la page User"_fr));
+        return;
+    }
+
+    // Page Enchaînement ouverte : on lance avec ce qu'elle montre ; sinon, avec l'enchaînement de la scène
+    const auto e = page == Page::enchainement ? morceau.enchainement : morceau.scenes[(size_t) scene].entree.value_or (morceau.enchainement);
+    const bool enchaine = moteur.enLecture() && e.type != TypeEnchainement::coupe;
+    moteur.lancerScene (scene, e);
+    annoncer ("Scène "_fr + juce::String (scene + 1), morceau.scenes[(size_t) scene].nom + (enchaine ? " (" + decrire (e) + ")" : juce::String()));
 }
 
 void Pilote::appuyerPiste (int piste)
@@ -1211,6 +1265,11 @@ void Pilote::appuyer (int bouton)
             annoncer ("Setup", "Réglages du clic sur les encodeurs"_fr);
             return;
 
+        case Bouton::user:
+            page = Page::enchainement;
+            annoncer ("Enchaînement"_fr, "Scène : lancer ainsi ; User tenu + scène : retenir"_fr);
+            return;
+
         default:
             break;
     }
@@ -1373,6 +1432,7 @@ EtatSurface Pilote::calculerEtat() const
     blanc (Bouton::accent, tenu (Bouton::accent));
     blanc (Bouton::scale, page == Page::gamme);
     blanc (Bouton::addDevice, page == Page::ajoutEffet);
+    blanc (Bouton::user, page == Page::enchainement || moteur.enchainementEnCours().has_value());
 
     if (page == Page::mix || page == Page::envoisDelay || page == Page::envoisReverb || page == Page::departs)
     {
@@ -1460,6 +1520,15 @@ void Pilote::dessinerEcran (juce::Image& image) const
     g.setColour (panneau);
     g.fillRect (0.0f, 50.0f, largeur, 2.0f);
 
+    // Enchaînement en cours : la ligne sous l'en-tête avance avec lui
+    const auto enchainement = moteur.enchainementEnCours();
+
+    if (enchainement && ! enchainement->enAttente)
+    {
+        g.setColour (premier);
+        g.fillRect (0.0f, 49.0f, largeur * enchainement->avancee, 4.0f);
+    }
+
     // Annonce, par-dessus les colonnes
     if (juce::Time::getMillisecondCounterHiRes() < annonce.fin)
     {
@@ -1508,6 +1577,38 @@ void Pilote::dessinerEcran (juce::Image& image) const
         g.fillRoundedRectangle (barre, 4.0f);
         g.setColour (touches[(size_t) i] ? premier : r.couleur);
         g.fillRoundedRectangle (barre.withWidth (barre.getWidth() * juce::jlimit (0.0f, 1.0f, r.proportion())), 4.0f);
+    }
+
+    // Page Enchaînement : à droite, l'enchaînement en cours et les deux scènes
+    if (page == Page::enchainement)
+    {
+        const auto zone = juce::Rectangle<float> (4.0f * colonne + 8.0f, 60.0f, 4.0f * colonne - 16.0f, 92.0f);
+        auto nomDeScene = [&morceau] (int s) { return s >= 0 && s < (int) morceau.scenes.size() ? morceau.scenes[(size_t) s].nom : juce::String ("Silence"); };
+
+        g.setColour (discret);
+        g.setFont (juce::FontOptions (21.0f));
+
+        if (! enchainement)
+        {
+            g.drawFittedText ("Aucun enchaînement en cours"_fr, zone.withHeight (28.0f).toNearestInt(), juce::Justification::centred, 1, 0.7f);
+            return;
+        }
+
+        const auto titre = enchainement->enAttente ? "Au prochain calage"_fr
+                         : enchainement->annulation ? "Retour en cours"_fr
+                                                    : nomDeLEnchainement (enchainement->type) + " en cours";
+        g.drawFittedText (titre, zone.withHeight (28.0f).toNearestInt(), juce::Justification::centred, 1, 0.7f);
+
+        g.setColour (texte);
+        g.setFont (juce::FontOptions (30.0f, juce::Font::bold));
+        g.drawFittedText (nomDeScene (enchainement->sceneDe) + "  vers  " + nomDeScene (enchainement->sceneVers),
+                          juce::Rectangle<float> (zone.getX(), 90.0f, zone.getWidth(), 36.0f).toNearestInt(), juce::Justification::centred, 1, 0.5f);
+
+        const auto barre = juce::Rectangle<float> (zone.getX() + 10.0f, 136.0f, zone.getWidth() - 20.0f, 10.0f);
+        g.setColour (panneau);
+        g.fillRoundedRectangle (barre, 4.0f);
+        g.setColour (premier);
+        g.fillRoundedRectangle (barre.withWidth (barre.getWidth() * enchainement->avancee), 4.0f);
     }
 }
 
