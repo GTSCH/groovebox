@@ -8,6 +8,7 @@
 #include "modele/Demo.h"
 #include "modele/Bibliotheque.h"
 #include "moteur/FabriqueDeSons.h"
+#include "modele/CarteDeGrooves.h"
 #include "push/Pilote.h"
 #include "push/EcranPush.h"
 #include "push/PushMidi.h"
@@ -1642,12 +1643,263 @@ public:
     }
 };
 
+//==============================================================================
+class EssaisGenerateurs  : public juce::UnitTest
+{
+public:
+    EssaisGenerateurs()  : juce::UnitTest ("Générateurs"_fr, "groovebox") {}
+
+    static juce::String motif (const std::vector<bool>& m)
+    {
+        juce::String s;
+
+        for (auto b : m)
+            s << (b ? "x" : ".");
+
+        return s;
+    }
+
+    static int compter (const std::vector<Note>& notes, int hauteur)
+    {
+        return (int) std::count_if (notes.begin(), notes.end(), [hauteur] (const Note& n) { return n.hauteur == hauteur; });
+    }
+
+    void runTest() override
+    {
+        using namespace generateurs;
+        auto& engine = *te::Engine::getEngines()[0];
+
+        beginTest ("Euclidien : les motifs connus");
+        expectEquals (motif (euclide (3, 8)), juce::String ("x..x..x."));
+        expectEquals (motif (euclide (5, 8)), juce::String ("x.x.xx.x"), "5 sur 8 (une rotation de x.xx.xx.)");
+        expectEquals (motif (euclide (4, 16)), juce::String ("x...x...x...x..."));
+        expectEquals (motif (euclide (3, 8, 1)), juce::String (".x..x..x"), "rotation d'un pas"_fr);
+        expectEquals (motif (euclide (0, 7)), juce::String ("......."));
+        expectEquals (motif (euclide (7, 7)), juce::String ("xxxxxxx"));
+
+        beginTest ("Carte de grooves : fidèle aux nœuds de Grids"_fr);
+        {
+            // Comme dans Grids, le mélange divise par 256 : même sans mélange, 145 ressort à 143
+            auto commeGrids = [] (int a) { return (((a * 255) >> 8) * 255) >> 8; };
+
+            // X = Y = 0 : le nœud du coin (10)
+            for (int pas = 0; pas < 32; ++pas)
+                for (int v = 0; v < 3; ++v)
+                    expectEquals (niveauGrooves (pas, 0.0f, 0.0f)[(size_t) v], commeGrids (carteDeGrooves::noeuds[10][(size_t) (v * 32 + pas)]));
+
+            // Au milieu exact de la carte (X = Y = 128) : le nœud central (4)
+            expectEquals (niveauGrooves (0, 128.0f / 255.0f, 128.0f / 255.0f)[0], commeGrids (carteDeGrooves::noeuds[4][0]));
+
+            // À mi-chemin entre deux nœuds en X (X = 32) : la moyenne pondérée de Grids
+            const int a = carteDeGrooves::noeuds[10][5 * 0 + 6], b = carteDeGrooves::noeuds[15][6];
+            const int ab = (a * (255 - 128) + b * 128) >> 8;
+            expectEquals (niveauGrooves (6, 32.0f / 255.0f, 0.0f)[0], (ab * 255) >> 8);
+            expect (carteDeGroovesDisponible (Mesure::standard (4, 4)) && ! carteDeGroovesDisponible (Mesure::standard (7, 8)));
+        }
+
+        beginTest ("Même réglages, même graine : même rythme ; le chaos dépend de la graine");
+        {
+            auto g = Generateur::parDefaut (MoteurRythmique::grooves, Mesure::standard (4, 4));
+            g.chaos = 0.8f;
+            const auto a = generer (g, Mesure::standard (4, 4), 4), b = generer (g, Mesure::standard (4, 4), 4);
+            expect (a == b, "reproductible"_fr);
+            auto g2 = g;
+            g2.graine = 77;
+            expect (generer (g2, Mesure::standard (4, 4), 4) != a, "autre graine, autre rythme avec du chaos"_fr);
+            g.chaos = g2.chaos = 0.0f;
+            expect (generer (g, Mesure::standard (4, 4), 4) == generer (g2, Mesure::standard (4, 4), 4), "sans chaos, la graine ne change rien"_fr);
+        }
+
+        beginTest ("Densités : 0 = silence, 1 = beaucoup de coups"_fr);
+        {
+            auto g = Generateur::parDefaut (MoteurRythmique::grooves, Mesure::standard (4, 4));
+            g.densites = { 0.0f, 0.0f, 0.0f };
+            expect (generer (g, Mesure::standard (4, 4), 1).empty());
+            g.densites = { 1.0f, 1.0f, 1.0f };
+            expect (compter (generer (g, Mesure::standard (4, 4), 1), 42) >= 8);
+        }
+
+        for (auto& mesure : Mesure::mesuresProposees())
+            for (auto moteurR : { MoteurRythmique::euclidien, MoteurRythmique::maison, MoteurRythmique::grooves })
+            {
+                if (moteurR == MoteurRythmique::grooves && ! carteDeGroovesDisponible (mesure))
+                    continue;
+
+                beginTest ("Rythme jouable dès le départ : "_fr + nomDuMoteur (moteurR) + " en " + mesure.nom());
+                const auto notes = generer (Generateur::parDefaut (moteurR, mesure), mesure, 2);
+                const auto longueur = 2.0 * mesure.numerateur;
+                expect (compter (notes, 36) >= 2, "grosse caisse"_fr);
+                expect (compter (notes, 38) >= 1 || compter (notes, 39) >= 1, "caisse claire"_fr);
+                expect (compter (notes, 42) >= 2, "charleston"_fr);
+                expect (std::any_of (notes.begin(), notes.end(), [] (const Note& n) { return n.hauteur == 36 && n.debut == 0.0; }), "grosse caisse sur le premier temps"_fr);
+
+                bool surLaGrille = true, dansLeClip = true;
+
+                for (auto& n : notes)
+                {
+                    const auto indice = n.debut / pas (mesure);
+                    surLaGrille = surLaGrille && std::abs (indice - std::round (indice)) < 1.0e-9;
+                    dansLeClip = dansLeClip && n.debut >= 0.0 && n.debut < longueur;
+                }
+
+                expect (surLaGrille, "notes sur la grille des double-croches"_fr);
+                expect (dansLeClip, "notes dans le clip"_fr);
+            }
+
+        beginTest ("Carte maison : 9 rythmes de référence distincts dans chaque mesure");
+        for (auto& mesure : Mesure::mesuresProposees())
+        {
+            std::set<juce::String> rythmes;
+
+            for (float x : { 0.0f, 0.5f, 1.0f })
+                for (float y : { 0.0f, 0.5f, 1.0f })
+                {
+                    auto g = Generateur::parDefaut (MoteurRythmique::maison, mesure);
+                    g.x = x;
+                    g.y = y;
+                    juce::String empreinte;
+
+                    for (auto& n : generer (g, mesure, 1))
+                        empreinte << n.hauteur << "@" << n.debut << " ";
+
+                    rythmes.insert (empreinte);
+                }
+
+            expect (rythmes.size() >= 8, mesure.nom() + " : " + juce::String ((int) rythmes.size()) + " rythmes distincts");
+        }
+
+        beginTest ("Humanisation : jamais en avance, vélocités variées"_fr);
+        {
+            auto g = Generateur::parDefaut (MoteurRythmique::euclidien, Mesure::standard (4, 4));
+            const auto droit = generer (g, Mesure::standard (4, 4), 1);
+            g.humanisation = 1.0f;
+            const auto humain = generer (g, Mesure::standard (4, 4), 1);
+            expectEquals ((int) humain.size(), (int) droit.size());
+            bool jamaisEnAvance = true, varie = false;
+
+            for (size_t i = 0; i < humain.size(); ++i)
+            {
+                const auto grille = std::floor (humain[i].debut / 0.25 + 1.0e-9) * 0.25;
+                jamaisEnAvance = jamaisEnAvance && humain[i].debut >= grille && humain[i].debut < grille + 0.25;
+                varie = varie || humain[i].velocite != droit[i].velocite;
+            }
+
+            expect (jamaisEnAvance && varie);
+        }
+
+        beginTest ("Roulement toutes les 2 mesures");
+        {
+            auto g = Generateur::parDefaut (MoteurRythmique::euclidien, Mesure::standard (4, 4));
+            g.roulement = 2;
+            const auto notes = generer (g, Mesure::standard (4, 4), 4);
+            auto caissesDansLaFin = [&] (int mesure) { return (int) std::count_if (notes.begin(), notes.end(), [mesure] (const Note& n) {
+                return n.hauteur == 38 && n.debut > mesure * 4 + 3.0 && n.debut < mesure * 4 + 4.0; }); };   // après la caisse claire du 4e temps
+            expectEquals (caissesDansLaFin (0), 0);
+            expectEquals (caissesDansLaFin (1), 3, "roulement en double-croches à la fin de la 2e mesure"_fr);
+            expectEquals (caissesDansLaFin (2), 0);
+            expectEquals (caissesDansLaFin (3), 3);
+        }
+
+        beginTest ("Varier : à zéro rien ne change ; sinon le rythme bouge, toujours dans le clip");
+        {
+            const auto m = Mesure::standard (4, 4);
+            const auto depart = generer (Generateur::parDefaut (MoteurRythmique::grooves, m), m, 1);
+            expect (varier (depart, { 0.0f, 0.0f, 0, false }, 5, m, 1) == depart, "variation nulle"_fr);
+            const auto varie = varier (depart, { 0.5f, 0.3f, 0, false }, 5, m, 1);
+            expect (varie != depart);
+            expect (varier (depart, { 0.5f, 0.3f, 0, false }, 5, m, 1) == varie, "même graine, même variation"_fr);
+            expect (std::any_of (varie.begin(), varie.end(), [] (const Note& n) { return n.hauteur == 36 && n.debut == 0.0; }), "le premier temps reste");
+            const auto tourne = varier (depart, { 0.0f, 0.0f, 4, false }, 5, m, 1);
+            expect (std::all_of (tourne.begin(), tourne.end(), [] (const Note& n) { return n.debut < 4.0; }));
+        }
+
+        beginTest ("Le générateur se sauvegarde avec le morceau ; figer garde les notes"_fr);
+        {
+            auto m = morceauDeDemonstration();
+            Clip c { "Euclidien", 2, {} };
+            c.generateur = Generateur::parDefaut (MoteurRythmique::euclidien, m.mesure);
+            c.generateur->voix[2].probabilite = 0.7f;
+            c.regenerer (m.mesure);
+            m.scenes[6].clips[0] = c;
+            m.swing = 0.3f;
+            m.pistes[0].swing = 0.5f;
+            const auto relu = Morceau::depuisJson (juce::JSON::parse (juce::JSON::toString (m.versJson())));
+            expect (relu == m);
+
+            auto fige = c;
+            fige.figer();
+            expect (! fige.generateur && fige.notes == c.notes);
+        }
+
+        beginTest ("Swing : les double-croches du contretemps sont retardées à la lecture seulement");
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+            m.assurerScenes (8);
+            Clip c { "Charleston", 1, {} };
+
+            for (int i = 0; i < 16; ++i)
+                c.notes.push_back ({ i * 0.25, 0.1, 42, 90 });
+
+            m.scenes[0].clips[0] = c;
+            Moteur moteur (engine, m, &banqueEssai());
+            expectEquals (moteur.debutsJoues (0, 0)[1], 0.25, "sans swing"_fr);
+
+            moteur.modifier ([] (Morceau& mm) { mm.swing = 0.4f; });
+            const auto avecSwing = moteur.debutsJoues (0, 0);
+            expectWithinAbsoluteError (avecSwing[1], 0.25 + 0.4 * 0.25, 1.0e-6, "contretemps retardé"_fr);
+            expectEquals (avecSwing[2], 0.5, "temps fort inchangé"_fr);
+            expectEquals (moteur.getMorceau().clip (0, 0)->notes[1].debut, 0.25, "le morceau garde la grille"_fr);
+
+            moteur.modifier ([] (Morceau& mm) { mm.pistes[0].swing = 0.0f; });
+            expectEquals (moteur.debutsJoues (0, 0)[1], 0.25, "swing propre à la piste : 0"_fr);
+        }
+
+        beginTest ("Au Push : trois encodeurs donnent un rythme, dans chaque mesure");
+        for (auto& mesure : Mesure::mesuresProposees())
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauAvec (120.0, mesure), &banqueEssai());
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            auto bouton = [&] (Bouton b) { surface.recevoir ({ Evenement::Type::bouton, (int) b, 1, true }); surface.recevoir ({ Evenement::Type::bouton, (int) b, 0, false }); };
+
+            bouton (Bouton::note);
+            bouton (Bouton::device);    // page Générateur
+            expect (pilote.getPage() == Pilote::Page::generateur);
+
+            surface.recevoir ({ Evenement::Type::encodeurTourne, 0, 30, false });   // X
+            surface.recevoir ({ Evenement::Type::encodeurTourne, 1, -20, false });  // Y
+            surface.recevoir ({ Evenement::Type::encodeurTourne, 4, 15, false });   // densité du charleston
+
+            const auto* clip = moteur.getMorceau().clip (0, 0);
+            expect (clip != nullptr && clip->generateur.has_value(), mesure.nom() + " : clip généré"_fr);
+
+            if (clip != nullptr)
+            {
+                expect (compter (clip->notes, 36) >= 1 && compter (clip->notes, 42) >= 2, mesure.nom() + " : rythme jouable"_fr);
+                expectEquals (pilote.nombreDePas(), mesure.numerateur * mesure.grilleParDefaut() / mesure.denominateur);
+            }
+
+            // Convert fige ; Shift + Duplicate duplique en variant
+            bouton (Bouton::convert);
+            expect (! moteur.getMorceau().clip (0, 0)->generateur.has_value(), "figé"_fr);
+            surface.recevoir ({ Evenement::Type::bouton, (int) Bouton::shift, 1, true });
+            bouton (Bouton::duplicate);
+            surface.recevoir ({ Evenement::Type::bouton, (int) Bouton::shift, 0, false });
+            const auto* copie = moteur.getMorceau().clip (0, 1);
+            expect (copie != nullptr && copie->nom.endsWith ("var."), "dupliqué et varié en dessous"_fr);
+        }
+    }
+};
+
 static EssaisModele essaisModele;
 static EssaisSorties essaisSorties;
 static EssaisHorloge essaisHorloge;
 static EssaisPush essaisPush;
 static EssaisSession essaisSession;
 static EssaisBatterie essaisBatterie;
+static EssaisGenerateurs essaisGenerateurs;
 
 } // namespace groovebox
 

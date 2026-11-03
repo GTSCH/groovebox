@@ -18,6 +18,10 @@ namespace
             notes.add (juce::Array<juce::var> { n.debut, n.duree, n.hauteur, n.velocite });
 
         objet->setProperty ("notes", notes);
+
+        if (c.generateur)
+            objet->setProperty ("generateur", c.generateur->versJson());
+
         return juce::var (objet);
     }
 
@@ -38,6 +42,9 @@ namespace
                 if (auto a = n.getArray(); a != nullptr && a->size() == 4)
                     c.notes.push_back ({ (double) (*a)[0], (double) (*a)[1],
                                          juce::jlimit (0, 127, (int) (*a)[2]), juce::jlimit (1, 127, (int) (*a)[3]) });
+
+        if (const auto g = v.getProperty ("generateur", {}); g.isObject())
+            c.generateur = Generateur::depuisJson (g);
 
         return c;
     }
@@ -106,6 +113,15 @@ juce::var Morceau::versJson() const
     racine->setProperty ("musiqueDansCasqueDb", musiqueDansCasqueDb);
     racine->setProperty ("volumeGeneralDb", volumeGeneralDb);
     racine->setProperty ("calage", nomsDesCalages[(int) calage]);
+    racine->setProperty ("swing", swing);
+    racine->setProperty ("prochaineGraine", (juce::int64) prochaineGraine);
+
+    auto var = new juce::DynamicObject();
+    var->setProperty ("quantite", variation.quantite);
+    var->setProperty ("densite", variation.densite);
+    var->setProperty ("rotation", variation.rotation);
+    var->setProperty ("inversion", variation.inversion);
+    racine->setProperty ("variation", juce::var (var));
 
     juce::Array<juce::var> listePistes;
 
@@ -118,6 +134,7 @@ juce::var Morceau::versJson() const
         objet->setProperty ("panoramique", p.panoramique);
         objet->setProperty ("mute", p.mute);
         objet->setProperty ("solo", p.solo);
+        objet->setProperty ("swing", p.swing ? juce::var (*p.swing) : juce::var());
 
         if (p.estUneBatterie())
             objet->setProperty ("kit", p.kit.versJson());
@@ -197,6 +214,26 @@ juce::String nomDuCalage (Calage c)
     return {};
 }
 
+void Clip::regenerer (const Mesure& m)
+{
+    if (generateur)
+        notes = generateurs::generer (*generateur, m, longueurMesures);
+}
+
+float Morceau::swingDeLaPiste (int piste) const
+{
+    const auto& p = pistes[(size_t) juce::jlimit (0, nombreDePistes - 1, piste)];
+    return p.swing.value_or (swing);
+}
+
+void Morceau::regenererTout()
+{
+    for (auto& s : scenes)
+        for (auto& c : s.clips)
+            if (c && c->generateur)
+                c->regenerer (mesure);
+}
+
 bool Scene::estVide() const
 {
     return std::none_of (clips.begin(), clips.end(), [] (auto& c) { return c.has_value(); });
@@ -254,6 +291,17 @@ Morceau Morceau::depuisJson (const juce::var& v)
     if (const auto c = nomsDesCalages.indexOf (v.getProperty ("calage", {}).toString()); c >= 0)
         m.calage = (Calage) c;
 
+    m.swing = juce::jlimit (0.0f, 0.75f, (float) v.getProperty ("swing", 0.0f));
+    m.prochaineGraine = (juce::uint32) (juce::int64) v.getProperty ("prochaineGraine", 2);
+
+    if (const auto var = v.getProperty ("variation", {}); var.isObject())
+    {
+        m.variation.quantite = juce::jlimit (0.0f, 1.0f, (float) var.getProperty ("quantite", 0.25f));
+        m.variation.densite = juce::jlimit (-1.0f, 1.0f, (float) var.getProperty ("densite", 0.0f));
+        m.variation.rotation = (int) var.getProperty ("rotation", 0);
+        m.variation.inversion = var.getProperty ("inversion", false);
+    }
+
     if (auto liste = v.getProperty ("pistes", {}).getArray())
     {
         for (int i = 0; i < std::min (nombreDePistes, liste->size()); ++i)
@@ -269,6 +317,9 @@ Morceau Morceau::depuisJson (const juce::var& v)
             piste.panoramique = juce::jlimit (-1.0f, 1.0f, (float) p.getProperty ("panoramique", 0.0f));
             piste.mute = p.getProperty ("mute", false);
             piste.solo = p.getProperty ("solo", false);
+
+            if (const auto sw = p.getProperty ("swing", {}); ! sw.isVoid())
+                piste.swing = juce::jlimit (0.0f, 0.75f, (float) sw);
 
             if (const auto kit = p.getProperty ("kit", {}); kit.isObject())
                 piste.kit = Kit::depuisJson (kit);

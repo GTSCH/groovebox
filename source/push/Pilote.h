@@ -24,7 +24,7 @@ public:
     EtatSurface calculerEtat() const;
     void dessinerEcran (juce::Image&) const;
 
-    enum class Page { mix, clic, device, browse };
+    enum class Page { mix, clic, device, generateur, commun, variation, browse };
     enum class Mode { session, note };
     Page getPage() const                    { return page; }
     Mode getMode() const                    { return mode; }
@@ -75,7 +75,9 @@ private:
     bool copieFaite = false;
     std::array<bool, nombreEncodeurs> touches {};
     std::array<int, nombreEncodeurs> crans {};
-    std::array<Reglage, 8> pageClic, pageMix, pageDevice, pageBrowse;
+    std::array<Reglage, 8> pageClic, pageMix, pageDevice, pageBrowse, pageEuclide, pageCartes, pageCommun, pageVariation;
+    int voixEuclidienne = 0;
+    bool varierEnDupliquant = false;
     Annonce annonce;
     juce::Image ecran { juce::Image::RGB, EtatSurface::largeurEcran, EtatSurface::hauteurEcran, true };
 
@@ -87,12 +89,24 @@ private:
             case Page::clic:    return pageClic;
             case Page::device:  return pageDevice;
             case Page::browse:  return pageBrowse;
+            case Page::commun:  return pageCommun;
+            case Page::variation: return pageVariation;
+            case Page::generateur:
+            {
+                const auto* g = generateurVise();
+                return g != nullptr && g->moteur != MoteurRythmique::euclidien ? pageCartes : pageEuclide;
+            }
         }
 
         return pageMix;
     }
 
     bool pisteChoisieEstUneBatterie() const;
+    const Generateur* generateurVise() const;
+    void modifierGenerateur (int encodeur, std::function<void (Generateur&)>);
+    void modifierClipVise (int encodeur, std::function<void (Clip&)>);
+    void appliquerVariation (Clip&, Morceau&);
+    void figerLeClip();
     void modifierPad (int encodeur, std::function<void (PadBatterie&)>);
     juce::StringArray sonsDeLaCategorie() const;
     void choisirDansLeNavigateur();

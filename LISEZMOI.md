@@ -11,11 +11,12 @@ Groovebox logicielle pour Mac, pilotée au Push 2. Le cahier des charges est dan
 | 3. Push 2 | Faite le 03.11.2026, validée avec le simulateur et les essais ; essai sur le vrai Push à faire |
 | 4. Session | Faite et validée à l'oreille le 03.11.2026 |
 | 5a. Batterie, pas à pas | Faite et validée à l'oreille le 03.11.2026 |
-| 5b. Générateurs rythmiques | Pas commencée |
+| 5b. Générateurs rythmiques | Faite et validée à l'oreille le 03.11.2026 |
 | 6 à 11 | Pas commencées |
 
 ## Organisation
 
+- `source/modele/Generateurs` : moteurs euclidien, carte de grooves (`CarteDeGrooves.h`, données de Grids d'Emilie Gillet, GPL v3), carte maison (9 rythmes de référence bâtis sur le groupement), humanisation, roulement, variation.
 - `source/modele/` : le morceau (tempo, mesure, clic, 8 pistes, scènes, clips de notes), sauvegardé en JSON lisible ; `Bibliotheque` (un dossier par morceau, copies de secours, repérage des plantages) ; `Demo` (morceau de démonstration) ; Tap Tempo.
 - `source/moteur/` : le moteur audio (Tracktion Engine), la batterie (`BatteriePlugin`, 16 pads lus depuis des WAV, `BanqueDeSons` pour le dossier Sons, `FabriqueDeSons` pour les kits de départ calculés), le clic, l'instrument provisoire (batterie et petit synthé calculés, en attendant les étapes 5 et 6), le bip de test, les réglages. Code commun à l'application et aux essais.
 - `source/push/` : le Push 2. `Controles` (numéros des boutons, lecture des messages, commandes sysex), `Palette` (8 couleurs de piste), `Surface` (état partagé entre le Push et le simulateur), `PushMidi` (port User), `EcranPush` (écran par USB, fil dédié à 60 images par seconde), `Pilote` (ce que fait chaque contrôle, LED, dessin de l'écran).
@@ -67,4 +68,6 @@ Fait tourner le moteur 60 secondes avec les bips actifs mais muets, puis écrit 
 - Le simulateur ne reçoit pas les clics quand sa fenêtre est en arrière-plan sous le contrôle d'écran de Claude : pour l'essayer, prendre la main à l'écran (clic réel).
 - Batterie : un kit par piste batterie (16 pads, notes 36 à 51), enregistré dans le morceau ; les sons restent en mémoire jusqu'à la fermeture, ce qui permet au fil audio de les lire sans risque. Sur chaque voix, l'instrument provisoire et la batterie sont présents, un seul est actif selon le son de la piste.
 - Push, mode Note (pistes batterie) : 4 sur 4 en bas à gauche pour les pads, les 4 rangées du haut pour 32 pas du pas à pas (Page gauche et droite au-delà). Device : réglages du pad choisi (encodeurs 1 à 6) et du kit (7 et 8). Browse : catégorie (encodeur 1) puis son ou kit (encodeur 2), avec préécoute.
-- Licences : libusb LGPL 2.1 ; Tracktion Engine GPL v3, JUCE AGPL v3. Usage personnel, aucune contrainte.
+- Générateurs : un clip peut porter sa recette (`Clip::generateur`) ; ses notes sont recalculées à chaque réglage et à chaque changement de mesure ; Convert la retire (clip figé). Résolution : la double-croche, quelle que soit la mesure. Le swing ne touche pas les notes du morceau : le moteur retarde les double-croches du contretemps au moment d'écrire le clip.
+- Push, pages Device d'une piste batterie : Device fait tourner Pad, Générateur, Commun. Clip : réglages de Shift + Duplicate. Encodeur Swing : swing global ; avec Shift, celui de la piste.
+- Licences : Grids (carte de grooves) GPL v3 ; libusb LGPL 2.1 ; Tracktion Engine GPL v3, JUCE AGPL v3. Usage personnel, aucune contrainte.

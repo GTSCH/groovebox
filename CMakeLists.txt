@@ -25,6 +25,7 @@ set (SOURCES_MOTEUR
     source/modele/Demo.cpp
     source/modele/Bibliotheque.cpp
     source/modele/Kit.cpp
+    source/modele/Generateurs.cpp
     source/moteur/BipPlugin.cpp
     source/moteur/ClicPlugin.cpp
     source/moteur/InstrumentProvisoire.cpp

@@ -100,6 +100,83 @@ Pilote::Pilote (Moteur& m, Surface& s)  : moteur (m), surface (s)
                       [this] (int pas, bool fin) { if (pisteChoisieEstUneBatterie()) moteur.modifier ([=, p = pisteChoisie] (Morceau& m) { auto& k = m.pistes[(size_t) p].kit; k.largeur = juce::jlimit (0.0f, 1.0f, k.largeur + (float) pas * (fin ? 0.001f : 0.005f)); }, "encodeur 7"); },
                       premier };
 
+    // Page Générateur, moteur euclidien : une voix à la fois
+    auto gen = [this] () -> Generateur { const auto* g = generateurVise(); return g != nullptr ? *g : Generateur::parDefaut (MoteurRythmique::euclidien, moteur.getMorceau().mesure); };
+    auto voixE = [this, gen] { return gen().voix[(size_t) voixEuclidienne]; };
+    static const juce::StringArray nomsDesVoix { "Grosse caisse", "Caisse claire", "Charleston", "Clap" };
+    const auto nPas = [this] { return generateurs::pasParMesure (moteur.getMorceau().mesure); };
+
+    pageEuclide[0] = { "Voix", [] { return juce::String(); }, [this] { return (float) voixEuclidienne / 3.0f; },
+                       [this] (int pas, bool) { if (auto c = crantsDiscrets (0, pas)) voixEuclidienne = juce::jlimit (0, 3, voixEuclidienne + c); }, premier };
+    pageEuclide[0].valeur = [this] { return nomsDesVoix[voixEuclidienne]; };
+    pageEuclide[1] = { "Coups", [voixE] { return juce::String (voixE().coups); }, [voixE, nPas] { return (float) voixE().coups / (float) nPas(); },
+                       [this, nPas] (int pas, bool) { if (auto c = crantsDiscrets (1, pas)) modifierGenerateur (1, [=, v = voixEuclidienne] (Generateur& g) { auto& x = g.voix[(size_t) v]; x.coups = juce::jlimit (0, nPas(), x.coups + c); x.accents = juce::jmin (x.accents, x.coups); }); }, actif };
+    pageEuclide[2] = { "Rotation", [voixE] { return juce::String (voixE().rotation); }, [voixE, nPas] { return (float) voixE().rotation / (float) juce::jmax (1, nPas() - 1); },
+                       [this, nPas] (int pas, bool) { if (auto c = crantsDiscrets (2, pas)) modifierGenerateur (2, [=, v = voixEuclidienne] (Generateur& g) { auto& x = g.voix[(size_t) v]; x.rotation = ((x.rotation + c) % nPas() + nPas()) % nPas(); }); }, actif };
+    pageEuclide[3] = { "Accents", [voixE] { return juce::String (voixE().accents); }, [voixE] { return voixE().coups == 0 ? 0.0f : (float) voixE().accents / (float) voixE().coups; },
+                       [this] (int pas, bool) { if (auto c = crantsDiscrets (3, pas)) modifierGenerateur (3, [=, v = voixEuclidienne] (Generateur& g) { auto& x = g.voix[(size_t) v]; x.accents = juce::jlimit (0, x.coups, x.accents + c); }); }, actif };
+    pageEuclide[4] = { "Probabilité"_fr, [voixE, pourcent] { return pourcent (voixE().probabilite); }, [voixE] { return voixE().probabilite; },
+                       [this] (int pas, bool fin) { modifierGenerateur (4, [=, v = voixEuclidienne] (Generateur& g) { auto& x = g.voix[(size_t) v]; x.probabilite = juce::jlimit (0.0f, 1.0f, x.probabilite + (float) pas * (fin ? 0.002f : 0.01f)); }); }, actif };
+    pageEuclide[5] = { "Humanisation", [gen, pourcent] { return pourcent (gen().humanisation); }, [gen] { return gen().humanisation; },
+                       [this] (int pas, bool fin) { modifierGenerateur (5, [=] (Generateur& g) { g.humanisation = juce::jlimit (0.0f, 1.0f, g.humanisation + (float) pas * (fin ? 0.002f : 0.01f)); }); }, actif };
+    pageEuclide[6] = { "Roulement", [gen] { return gen().roulement == 0 ? juce::String ("Aucun") : "Toutes les " + juce::String (gen().roulement); },
+                       [gen] { return (float) gen().roulement / 8.0f; },
+                       [this] (int pas, bool) { if (auto c = crantsDiscrets (6, pas)) modifierGenerateur (6, [=] (Generateur& g) {
+                           static constexpr int choix[] = { 0, 2, 4, 8 };
+                           int i = 0; while (i < 3 && choix[i] != g.roulement) ++i;
+                           g.roulement = choix[juce::jlimit (0, 3, i + c)]; }); }, actif };
+    pageEuclide[7] = { "Moteur", [gen] { return nomDuMoteur (gen().moteur); }, [gen] { return (float) gen().moteur / 2.0f; },
+                       [this] (int pas, bool) { if (auto c = crantsDiscrets (7, pas)) modifierGenerateur (7, [=, m = moteur.getMorceau().mesure] (Generateur& g) {
+                           auto suivant = (MoteurRythmique) juce::jlimit (0, 2, (int) g.moteur + c);
+                           if (suivant == MoteurRythmique::grooves && ! generateurs::carteDeGroovesDisponible (m))
+                               suivant = c > 0 ? MoteurRythmique::maison : MoteurRythmique::euclidien;
+                           g.moteur = suivant; }); }, premier };
+
+    // Page Générateur, cartes (grooves en 4/4, maison ailleurs)
+    pageCartes[0] = { "X", [gen, pourcent] { return pourcent (gen().x); }, [gen] { return gen().x; },
+                      [this] (int pas, bool fin) { modifierGenerateur (0, [=] (Generateur& g) { g.x = juce::jlimit (0.0f, 1.0f, g.x + (float) pas * (fin ? 0.001f : 0.005f)); }); }, actif };
+    pageCartes[1] = { "Y", [gen, pourcent] { return pourcent (gen().y); }, [gen] { return gen().y; },
+                      [this] (int pas, bool fin) { modifierGenerateur (1, [=] (Generateur& g) { g.y = juce::jlimit (0.0f, 1.0f, g.y + (float) pas * (fin ? 0.001f : 0.005f)); }); }, actif };
+
+    for (int v = 0; v < 3; ++v)
+        pageCartes[(size_t) (2 + v)] = { "Densité "_fr + juce::String (v == 0 ? "GC" : v == 1 ? "CC" : "CH"),
+                                         [gen, pourcent, v] { return pourcent (gen().densites[(size_t) v]); }, [gen, v] { return gen().densites[(size_t) v]; },
+                                         [this, v] (int pas, bool fin) { modifierGenerateur (2 + v, [=] (Generateur& g) { auto& d = g.densites[(size_t) v]; d = juce::jlimit (0.0f, 1.0f, d + (float) pas * (fin ? 0.001f : 0.005f)); }); }, actif };
+
+    pageCartes[5] = { "Chaos", [gen, pourcent] { return pourcent (gen().chaos); }, [gen] { return gen().chaos; },
+                      [this] (int pas, bool fin) { modifierGenerateur (5, [=] (Generateur& g) { g.chaos = juce::jlimit (0.0f, 1.0f, g.chaos + (float) pas * (fin ? 0.002f : 0.01f)); }); }, actif };
+    pageCartes[6] = pageEuclide[5];
+    pageCartes[7] = pageEuclide[7];
+
+    // Page Commun : swing de la piste, roulement, graine, longueur du clip
+    pageCommun[0] = { "Swing piste", [this] { const auto& p = moteur.getMorceau().pistes[(size_t) pisteChoisie];
+                                              return p.swing ? juce::String (juce::roundToInt (*p.swing * 100.0f)) + " %" : juce::String ("Global"); },
+                      [this] { return moteur.getMorceau().swingDeLaPiste (pisteChoisie) / 0.75f; },
+                      [this] (int pas, bool fin) { moteur.modifier ([=, p = pisteChoisie] (Morceau& m) { auto& s = m.pistes[(size_t) p].swing; s = juce::jlimit (0.0f, 0.75f, s.value_or (m.swing) + (float) pas * (fin ? 0.001f : 0.005f)); }, "encodeur commun 0"); }, premier };
+    pageCommun[1] = pageEuclide[5];
+    pageCommun[2] = pageEuclide[6];
+    pageCommun[3] = { "Graine", [gen] { return juce::String ((juce::int64) gen().graine); }, [] { return 0.0f; },
+                      [this] (int pas, bool) { if (auto c = crantsDiscrets (3, pas)) modifierGenerateur (3, [=] (Generateur& g) { g.graine = (juce::uint32) juce::jmax (1, (int) g.graine + c); }); }, actif };
+    pageCommun[4] = { "Longueur", [this] { const auto c = caseDuPasAPas(); const auto* clip = c ? moteur.getMorceau().clip (c->first, c->second) : nullptr;
+                                           return clip ? juce::String (clip->longueurMesures) + (clip->longueurMesures > 1 ? " mesures" : " mesure") : juce::String(); },
+                      [] { return 0.0f; },
+                      [this] (int pas, bool) { if (auto c = crantsDiscrets (4, pas)) modifierClipVise (4, [=] (Clip& clip) {
+                          const auto& l = Clip::longueursPossibles;
+                          int i = 0; while (i < 4 && l[(size_t) i] != clip.longueurMesures) ++i;
+                          clip.longueurMesures = l[(size_t) juce::jlimit (0, 4, i + c)]; }); }, actif };
+
+    // Page Variation (bouton Clip) : ce que fera Shift + Duplicate
+    auto variation = [this] () -> const Variation& { return moteur.getMorceau().variation; };
+    pageVariation[0] = { "Quantité"_fr, [variation, pourcent] { return pourcent (variation().quantite); }, [variation] { return variation().quantite; },
+                         [this] (int pas, bool) { moteur.modifier ([=] (Morceau& m) { m.variation.quantite = juce::jlimit (0.0f, 1.0f, m.variation.quantite + (float) pas * 0.005f); }, "variation 0"); }, premier };
+    pageVariation[1] = { "Densité"_fr, [variation] { const auto d = juce::roundToInt (variation().densite * 100.0f); return (d > 0 ? "+" : "") + juce::String (d) + " %"; },
+                         [variation] { return (variation().densite + 1.0f) / 2.0f; },
+                         [this] (int pas, bool) { moteur.modifier ([=] (Morceau& m) { m.variation.densite = juce::jlimit (-1.0f, 1.0f, m.variation.densite + (float) pas * 0.01f); }, "variation 1"); }, premier };
+    pageVariation[2] = { "Rotation", [variation] { return juce::String (variation().rotation); }, [] { return 0.0f; },
+                         [this] (int pas, bool) { if (auto c = crantsDiscrets (2, pas)) moteur.modifier ([=] (Morceau& m) { m.variation.rotation = juce::jlimit (-16, 16, m.variation.rotation + c); }, "variation 2"); }, premier };
+    pageVariation[3] = { "Inversion", [variation] { return variation().inversion ? juce::String ("Oui") : juce::String ("Non"); }, [variation] { return variation().inversion ? 1.0f : 0.0f; },
+                         [this] (int pas, bool) { if (auto c = crantsDiscrets (3, pas)) moteur.modifier ([=] (Morceau& m) { m.variation.inversion = c > 0; }, "variation 3"); }, premier };
+
     // Page Browse : catégorie, puis son (ou kit entier) pour le pad choisi, avec préécoute
     pageBrowse[0] = { "Catégorie"_fr, [this] { return categoriesDuNavigateur[categorieChoisie]; }, [this] { return categoriesDuNavigateur.isEmpty() ? 0.0f : (float) categorieChoisie / (float) juce::jmax (1, categoriesDuNavigateur.size() - 1); },
                       [this] (int pas, bool) { if (auto c = crantsDiscrets (0, pas)) { categorieChoisie = juce::jlimit (0, juce::jmax (0, categoriesDuNavigateur.size() - 1), categorieChoisie + c); sonChoisi = 0; } }, premier };
@@ -136,6 +213,103 @@ int Pilote::crantsDiscrets (int encodeur, int pas)
     const int changement = c / 8;
     c -= changement * 8;
     return changement;
+}
+
+const Generateur* Pilote::generateurVise() const
+{
+    const auto c = caseDuPasAPas();
+    const auto* clip = c ? moteur.getMorceau().clip (c->first, c->second) : nullptr;
+    return clip != nullptr && clip->generateur ? &*clip->generateur : nullptr;
+}
+
+void Pilote::modifierClipVise (int encodeur, std::function<void (Clip&)> f)
+{
+    if (! pisteChoisieEstUneBatterie())
+        return;
+
+    auto cible = caseDuPasAPas();
+    const int scene = cible ? cible->second : (caseChoisie && caseChoisie->first == pisteChoisie ? caseChoisie->second : 0);
+
+    moteur.modifier ([=, p = pisteChoisie] (Morceau& m)
+    {
+        m.assurerScenes (scene + 1);
+        auto& c = m.scenes[(size_t) scene].clips[(size_t) p];
+
+        if (! c)
+            c = Clip { "Rythme", 1, {} };
+
+        f (*c);
+        c->regenerer (m.mesure);
+    }, "clip " + juce::String (encodeur));
+
+    if (! cible)
+        caseChoisie = std::pair { pisteChoisie, scene };
+}
+
+void Pilote::modifierGenerateur (int encodeur, std::function<void (Generateur&)> f)
+{
+    const bool devientGenere = generateurVise() == nullptr;
+
+    modifierClipVise (encodeur, [=, m = moteur.getMorceau().mesure] (Clip& c)
+    {
+        // Un clip écrit à la main devient généré (Undo pour revenir)
+        if (! c.generateur)
+        {
+            // Départ sur une carte : X, Y et une densité suffisent pour un rythme jouable
+            c.generateur = Generateur::parDefaut (generateurs::carteDeGroovesDisponible (m) ? MoteurRythmique::grooves : MoteurRythmique::maison, m);
+            c.nom = "Généré"_fr;
+        }
+
+        f (*c.generateur);
+        c.nom = nomDuMoteur (c.generateur->moteur);
+    });
+
+    if (devientGenere)
+        annoncer ("Générateur"_fr, "Le clip est maintenant généré (Undo pour revenir)"_fr);
+}
+
+void Pilote::appliquerVariation (Clip& c, Morceau& m)
+{
+    const auto graine = m.prochaineGraine++;
+
+    if (c.generateur)
+    {
+        // Clip généré : nouvelle graine, densité décalée ; il reste réglable
+        auto& g = *c.generateur;
+        g.graine = graine;
+
+        for (auto& d : g.densites)
+            d = juce::jlimit (0.0f, 1.0f, d + m.variation.densite * 0.2f);
+
+        for (auto& v : g.voix)
+        {
+            v.coups = juce::jlimit (0, generateurs::pasParMesure (m.mesure), v.coups + juce::roundToInt (m.variation.densite * 2.0f));
+            v.rotation += m.variation.rotation;
+        }
+
+        g.chaos = juce::jmax (g.chaos, m.variation.quantite * 0.5f);
+        c.regenerer (m.mesure);
+    }
+    else
+    {
+        c.notes = generateurs::varier (c.notes, m.variation, graine, m.mesure, c.longueurMesures);
+    }
+
+    c.nom = c.nom.upToFirstOccurrenceOf (" var.", false, false) + " var.";
+}
+
+void Pilote::figerLeClip()
+{
+    const auto c = mode == Mode::note ? caseDuPasAPas() : caseChoisie;
+
+    if (! c || moteur.getMorceau().clip (c->first, c->second) == nullptr || ! moteur.getMorceau().clip (c->first, c->second)->generateur)
+    {
+        annoncer ("Convert", "Aucun clip généré choisi"_fr);
+        return;
+    }
+
+    moteur.modifier ([c] (Morceau& m) { m.scenes[(size_t) c->second].clips[(size_t) c->first]->figer(); });
+    annoncer ("Convert", "Clip figé : notes retouchables au pas à pas"_fr);
 }
 
 bool Pilote::pisteChoisieEstUneBatterie() const
@@ -355,7 +529,17 @@ void Pilote::tournerEncodeur (int encodeur, int pas)
             break;
 
         case Encodeur::swing:
-            annoncer ("Swing", "Arrive à l'étape 5"_fr);
+            if (fin)
+            {
+                // Shift : le swing propre à la piste choisie
+                moteur.modifier ([=, p = pisteChoisie] (Morceau& m) { auto& s = m.pistes[(size_t) p].swing; s = juce::jlimit (0.0f, 0.75f, s.value_or (m.swing) + (float) pas * 0.005f); }, "encodeur swing piste");
+                annoncer ("Swing de " + moteur.getMorceau().pistes[(size_t) pisteChoisie].nom, juce::String (juce::roundToInt (moteur.getMorceau().swingDeLaPiste (pisteChoisie) * 100.0f)) + " %");
+            }
+            else
+            {
+                moteur.modifier ([=] (Morceau& m) { m.swing = juce::jlimit (0.0f, 0.75f, m.swing + (float) pas * 0.005f); }, "encodeur swing");
+                annoncer ("Swing", juce::String (juce::roundToInt (moteur.getMorceau().swing * 100.0f)) + " %");
+            }
             break;
 
         default:
@@ -430,7 +614,9 @@ void Pilote::appuyerPad (int ligne, int colonne, int)
 void Pilote::dupliquerVersLeBas (int piste, int scene)
 {
     // Vers la première case vide en dessous ; une scène de plus s'il n'y en a pas
-    moteur.modifier ([=] (Morceau& m)
+    const bool varier = varierEnDupliquant;
+
+    moteur.modifier ([=, this] (Morceau& m)
     {
         int cible = scene + 1;
 
@@ -439,9 +625,12 @@ void Pilote::dupliquerVersLeBas (int piste, int scene)
 
         m.assurerScenes (cible + 1);
         m.scenes[(size_t) cible].clips[(size_t) piste] = m.scenes[(size_t) scene].clips[(size_t) piste];
+
+        if (varier && m.scenes[(size_t) cible].clips[(size_t) piste])
+            appliquerVariation (*m.scenes[(size_t) cible].clips[(size_t) piste], m);
     });
 
-    annoncer ("Clip dupliqué"_fr, moteur.getMorceau().pistes[(size_t) piste].nom);
+    annoncer (varier ? juce::String ("Dupliqué et varié"_fr) : juce::String ("Clip dupliqué"_fr), moteur.getMorceau().pistes[(size_t) piste].nom);
 }
 
 void Pilote::appuyerScene (int scene)
@@ -564,6 +753,20 @@ void Pilote::appuyer (int bouton)
             sourceDeCopie.reset();
             sceneSourceDeCopie.reset();
             copieFaite = false;
+            varierEnDupliquant = shift();
+
+            // En mode Note : Shift + Duplicate vise tout de suite le clip du pas à pas
+            if (mode == Mode::note)
+                sourceDeCopie = caseDuPasAPas();
+            return;
+
+        case Bouton::convert:
+            figerLeClip();
+            return;
+
+        case Bouton::clip:
+            page = Page::variation;
+            annoncer ("Clip", "Réglages de Shift + Duplicate (dupliquer et varier)"_fr);
             return;
 
         case Bouton::undo:
@@ -637,9 +840,17 @@ void Pilote::appuyer (int bouton)
             return;
 
         case Bouton::device:
-            page = Page::device;
-            annoncer ("Device", pisteChoisieEstUneBatterie() ? kitsDeDepart::nomsDesPads()[(size_t) padChoisi] + " et kit " + morceau.pistes[(size_t) pisteChoisie].kit.nom
-                                                              : juce::String ("Réglages des synthés à l'étape 6"_fr));
+            if (! pisteChoisieEstUneBatterie())
+            {
+                annoncer ("Device", "Réglages des synthés à l'étape 6"_fr);
+                return;
+            }
+
+            // Device fait tourner les pages : pad, générateur, réglages communs
+            page = page == Page::device ? Page::generateur : page == Page::generateur ? Page::commun : Page::device;
+            annoncer ("Device", page == Page::device ? kitsDeDepart::nomsDesPads()[(size_t) padChoisi] + ", kit " + morceau.pistes[(size_t) pisteChoisie].kit.nom
+                              : page == Page::generateur ? "Générateur "_fr + (generateurVise() ? nomDuMoteur (generateurVise()->moteur) : juce::String ("(le clip deviendra généré)"_fr))
+                                                         : juce::String ("Swing, humanisation, roulement, graine, longueur"));
             return;
 
         case Bouton::browse:
@@ -829,7 +1040,9 @@ EtatSurface Pilote::calculerEtat() const
 
     if (morceau.pistes[(size_t) pisteChoisie].estUneBatterie())
     {
-        blanc (Bouton::device, page == Page::device);
+        blanc (Bouton::device, page == Page::device || page == Page::generateur || page == Page::commun);
+        blanc (Bouton::clip, page == Page::variation);
+        blanc (Bouton::convert, generateurVise() != nullptr);
         blanc (Bouton::browse, page == Page::browse);
     }
 

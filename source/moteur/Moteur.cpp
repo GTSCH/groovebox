@@ -144,6 +144,10 @@ void Moteur::modifier (const std::function<void (Morceau&)>& changement, const j
     if (! nouveau.mesure.estValide() || enLecture())
         nouveau.mesure = morceau.mesure;
 
+    // Les clips générés suivent la mesure
+    if (nouveau.mesure != morceau.mesure)
+        nouveau.regenererTout();
+
     if (sortieCasqueDisponible())
         nouveau.clic.ecouteSurMac = false;
 
@@ -190,6 +194,12 @@ void Moteur::appliquerDifferences (const Morceau& ancien)
             appliquerMotifDuClic();
 
         appliquerCases (ancien, false);
+
+        // Swing changé : on réécrit les clips des pistes concernées
+        for (int p = 0; p < nombreDePistes; ++p)
+            if (morceau.swingDeLaPiste (p) != ancien.swingDeLaPiste (p))
+                for (int s = 0; s < (int) morceau.scenes.size(); ++s)
+                    appliquerCase (p, s);
     }
 
     appliquerReglagesDuClic();
@@ -375,12 +385,39 @@ void Moteur::appliquerCase (int piste, int scene)
     auto& notes = existant->getSequence();
     notes.clear (nullptr);
 
+    // Swing : les double-croches du contretemps (pas impairs) sont retardées, à la lecture seulement
+    const auto pasDuSwing = generateurs::pas (morceau.mesure);
+    const auto swing = (double) morceau.swingDeLaPiste (piste);
+
     for (auto& n : modele->notes)
-        if (n.debut >= 0.0 && n.debut < longueur)
-            notes.addNote (n.hauteur, te::BeatPosition::fromBeats (n.debut), te::BeatDuration::fromBeats (juce::jmin (n.duree, longueur - n.debut)),
-                           n.velocite, 0, nullptr);
+    {
+        if (n.debut < 0.0 || n.debut >= longueur)
+            continue;
+
+        auto debut = n.debut;
+        const auto indice = debut / pasDuSwing;
+        const auto arrondi = std::round (indice);
+
+        if (swing > 0.0 && std::abs (indice - arrondi) < 0.1 && ((long long) arrondi) % 2 != 0)
+            debut = juce::jmin (longueur - 1.0e-3, debut + swing * pasDuSwing);
+
+        notes.addNote (n.hauteur, te::BeatPosition::fromBeats (debut), te::BeatDuration::fromBeats (juce::jmax (0.01, juce::jmin (n.duree, longueur - debut))),
+                       n.velocite, 0, nullptr);
+    }
 
     existant->setLoopRangeBeats ({ te::BeatPosition(), te::BeatDuration::fromBeats (longueur) });
+}
+
+std::vector<double> Moteur::debutsJoues (int piste, int scene) const
+{
+    std::vector<double> debuts;
+
+    if (auto* c = clipDeLaCase (piste, scene))
+        for (auto* n : c->getSequence().getNotes())
+            debuts.push_back (n->getStartBeat().inBeats());
+
+    std::sort (debuts.begin(), debuts.end());
+    return debuts;
 }
 
 //==============================================================================

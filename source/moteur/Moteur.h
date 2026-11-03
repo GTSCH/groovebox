@@ -90,6 +90,9 @@ public:
 
     BanqueDeSons& getBanque()                   { return *banque; }
 
+    /** Débuts des notes telles que le moteur les joue (swing compris), pour les essais. */
+    std::vector<double> debutsJoues (int piste, int scene) const;
+
     /** Instrument d'une voix (0 : A, 1 : B), pour les essais. */
     te::AudioTrack* voix (int piste, int laquelle) const   { return pistesMoteur[(size_t) piste].voix[(size_t) laquelle]; }
 
