@@ -1821,7 +1821,7 @@ public:
             Clip c { "Euclidien", 2, {} };
             c.generateur = Generateur::parDefaut (MoteurRythmique::euclidien, m.mesure);
             c.generateur->voix[2].probabilite = 0.7f;
-            c.regenerer (m.mesure);
+            c.regenerer (m.mesure, m.gamme);
             m.scenes[6].clips[0] = c;
             m.swing = 0.3f;
             m.pistes[0].swing = 0.5f;
@@ -2165,6 +2165,192 @@ public:
     }
 };
 
+//==============================================================================
+class EssaisMelodies  : public juce::UnitTest
+{
+public:
+    EssaisMelodies()  : juce::UnitTest ("Mélodies"_fr, "groovebox") {}
+
+    void runTest() override
+    {
+        using namespace melodies;
+        auto& engine = *te::Engine::getEngines()[0];
+        const auto quatre = Mesure::standard (4, 4);
+        const Gamme doMineur { 0, Gamme::Mode::mineur };
+
+        beginTest ("Même graine, même phrase ; autre graine, autre phrase");
+        {
+            auto g = GenerateurMelodique::parDefaut (StyleMelodique::basseDnb);
+            g.repetition = 0.0f;
+            const auto a = generer (g, quatre, doMineur, 4);
+            expect (a == generer (g, quatre, doMineur, 4));
+            g.graine = 99;
+            expect (generer (g, quatre, doMineur, 4) != a);
+        }
+
+        for (int style = 0; style < 7; ++style)
+            for (auto& mesure : Mesure::mesuresProposees())
+            {
+                beginTest (nomDuStyle ((StyleMelodique) style) + " en " + mesure.nom() + " : dans la gamme, dans le registre, dans le clip");
+                const auto g = GenerateurMelodique::parDefaut ((StyleMelodique) style);
+
+                for (auto gamme : { doMineur, Gamme { 7, Gamme::Mode::dorien }, Gamme { 2, Gamme::Mode::pentatoniqueMineure } })
+                {
+                    const auto notes = generer (g, mesure, gamme, 2);
+                    expect (notes.size() >= 2, "au moins deux notes"_fr);
+
+                    for (auto& n : notes)
+                    {
+                        expect (gamme.contient (n.hauteur), "fausse note"_fr);
+                        expect (n.hauteur >= gamme.note (-3, g.registre) && n.hauteur <= gamme.note (2 * gamme.nombreDeDegres() + 6, g.registre), "hors du registre"_fr);
+                        expect (n.debut >= 0.0 && n.debut < 2.0 * mesure.numerateur && n.duree > 0.0, "hors du clip"_fr);
+                    }
+                }
+            }
+
+        beginTest ("Basse dub : fondamentale et quinte, notes longues, sur le premier temps");
+        {
+            const auto notes = generer (GenerateurMelodique::parDefaut (StyleMelodique::basseDub), quatre, doMineur, 4);
+            int fondaOuQuinte = 0;
+            double dureeMoyenne = 0.0;
+
+            for (auto& n : notes)
+            {
+                const int classe = n.hauteur % 12;
+                fondaOuQuinte += (classe == 0 || classe == 7) ? 1 : 0;
+                dureeMoyenne += n.duree / (double) notes.size();
+            }
+
+            expectEquals (fondaOuQuinte, (int) notes.size(), "que des do et des sol"_fr);
+            expect (dureeMoyenne > 0.75, "notes longues : "_fr + juce::String (dureeMoyenne, 2) + " temps");
+            expect (notes.front().debut == 0.0 && notes.front().hauteur % 12 == 0, "fondamentale sur le premier temps"_fr);
+        }
+
+        beginTest ("Basse hard techno : jamais sur le temps (place à la grosse caisse)");
+        for (auto& n : generer (GenerateurMelodique::parDefaut (StyleMelodique::hardTechno), quatre, doMineur, 2))
+            expect (std::abs (n.debut - std::round (n.debut)) > 1.0e-6);
+
+        beginTest ("Arpège electro : une note par double-croche, dans l'accord"_fr);
+        {
+            const auto notes = generer (GenerateurMelodique::parDefaut (StyleMelodique::arpegeElectro), quatre, doMineur, 1);
+            expectEquals ((int) notes.size(), 16);
+
+            for (auto& n : notes)
+                expect (n.hauteur % 12 == 0 || n.hauteur % 12 == 3 || n.hauteur % 12 == 7, "do, mi bémol ou sol"_fr);
+        }
+
+        beginTest ("Stabs minimal : des accords de trois notes");
+        {
+            const auto notes = generer (GenerateurMelodique::parDefaut (StyleMelodique::stabsMinimal), quatre, doMineur, 2);
+            expectEquals ((int) notes.size() % 3, 0);
+            expectEquals (notes[0].debut, notes[2].debut, "trois notes ensemble"_fr);
+        }
+
+        beginTest ("Ligne acid : des glissés (notes qui se chevauchent)");
+        {
+            const auto notes = generer (GenerateurMelodique::parDefaut (StyleMelodique::acid), quatre, doMineur, 2);
+            int chevauchements = 0;
+
+            for (size_t k = 0; k + 1 < notes.size(); ++k)
+                if (notes[k].debut + notes[k].duree > notes[k + 1].debut + 1.0e-9)
+                    ++chevauchements;
+
+            expect (chevauchements >= 1, "au moins un glissé"_fr);
+            auto sansGlisse = GenerateurMelodique::parDefaut (StyleMelodique::acid);
+            sansGlisse.glisses = 0.0f;
+            const auto droites = generer (sansGlisse, quatre, doMineur, 2);
+
+            for (size_t k = 0; k + 1 < droites.size(); ++k)
+                expect (droites[k].debut + droites[k].duree <= droites[k + 1].debut + 1.0e-9, "sans glissé : aucune note ne déborde"_fr);
+        }
+
+        beginTest ("Répétition : à fond, le même motif à chaque mesure ; densité 0, silence"_fr);
+        {
+            auto g = GenerateurMelodique::parDefaut (StyleMelodique::basseDnb);
+            g.repetition = 0.7f;   // motif d'une mesure
+            const auto notes = generer (g, quatre, doMineur, 4);
+            std::vector<Note> premiere, troisieme;
+
+            for (auto n : notes)
+            {
+                if (n.debut < 4.0)                      premiere.push_back (n);
+                if (n.debut >= 8.0 && n.debut < 12.0)   { n.debut -= 8.0; troisieme.push_back (n); }
+            }
+
+            expectEquals ((int) premiere.size(), (int) troisieme.size());
+
+            for (size_t k = 0; k < std::min (premiere.size(), troisieme.size()); ++k)
+                expect (premiere[k].hauteur == troisieme[k].hauteur && std::abs (premiere[k].debut - troisieme[k].debut) < 1.0e-9);
+
+            g.densite = 0.0f;
+            expect (generer (g, quatre, doMineur, 4).empty());
+        }
+
+        beginTest ("Changer la gamme du morceau transpose les clips générés");
+        {
+            CarteSimulee carte (engine, 2);
+            auto m = morceauAvec (120.0, quatre);
+            m.assurerScenes (8);
+            Clip c { "Basse dub", 2, {} };
+            c.melodie = GenerateurMelodique::parDefaut (StyleMelodique::basseDub);
+            c.regenerer (m.mesure, m.gamme);
+            m.scenes[0].clips[1] = c;
+            Moteur moteur (engine, m, &banqueEssai());
+            moteur.modifier ([] (Morceau& mm) { mm.gamme = { 9, Gamme::Mode::mineur }; });
+
+            for (auto& n : moteur.getMorceau().clip (1, 0)->notes)
+                expect (n.hauteur % 12 == 9 || n.hauteur % 12 == 4, "la mineur : des la et des mi"_fr);
+        }
+
+        beginTest ("Au Push : trois encodeurs donnent une basse, Convert la fige, Shift + Duplicate la varie");
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauAvec (120.0, quatre), &banqueEssai());
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            auto bouton = [&] (Bouton b) { surface.recevoir ({ Evenement::Type::bouton, (int) b, 1, true }); surface.recevoir ({ Evenement::Type::bouton, (int) b, 0, false }); };
+
+            bouton ((Bouton) (premierBoutonDuBas + 1));
+            bouton (Bouton::note);
+            bouton (Bouton::device);    // macros
+            bouton (Bouton::device);    // mélodie
+            expect (pilote.getPage() == Pilote::Page::melodie);
+
+            surface.recevoir ({ Evenement::Type::encodeurTourne, 0, 20, false });   // densité
+            surface.recevoir ({ Evenement::Type::encodeurTourne, 2, 15, false });   // mouvement
+            surface.recevoir ({ Evenement::Type::encodeurTourne, 5, -10, false });  // répétition
+
+            const auto* clip = moteur.getMorceau().clip (1, 0);
+            expect (clip != nullptr && clip->melodie.has_value(), "clip mélodique créé"_fr);
+
+            if (clip != nullptr && clip->melodie)
+            {
+                expect (clip->melodie->style == StyleMelodique::basseDub, "le son Sub dub donne une basse dub"_fr);
+                expect (clip->notes.size() >= 2);
+            }
+
+            bouton (Bouton::convert);
+            expect (! moteur.getMorceau().clip (1, 0)->estGenere(), "figé"_fr);
+            surface.recevoir ({ Evenement::Type::bouton, (int) Bouton::shift, 1, true });
+            bouton (Bouton::duplicate);
+            surface.recevoir ({ Evenement::Type::bouton, (int) Bouton::shift, 0, false });
+            expect (moteur.getMorceau().clip (1, 1) != nullptr, "dupliqué et varié en dessous"_fr);
+        }
+
+        beginTest ("Le générateur mélodique se sauvegarde avec le morceau"_fr);
+        {
+            auto m = morceauDeDemonstration();
+            Clip c { "Acid", 2, {} };
+            c.melodie = GenerateurMelodique::parDefaut (StyleMelodique::acid);
+            c.melodie->graine = 1234;
+            c.regenerer (m.mesure, m.gamme);
+            m.scenes[6].clips[1] = c;
+            const auto relu = Morceau::depuisJson (juce::JSON::parse (juce::JSON::toString (m.versJson())));
+            expect (relu == m);
+        }
+    }
+};
+
 static EssaisModele essaisModele;
 static EssaisSorties essaisSorties;
 static EssaisHorloge essaisHorloge;
@@ -2174,6 +2360,7 @@ static EssaisBatterie essaisBatterie;
 static EssaisGenerateurs essaisGenerateurs;
 static EssaisGammes essaisGammes;
 static EssaisSurge essaisSurge;
+static EssaisMelodies essaisMelodies;
 
 } // namespace groovebox
 

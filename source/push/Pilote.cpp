@@ -166,6 +166,34 @@ Pilote::Pilote (Moteur& m, Surface& s)  : moteur (m), surface (s)
                           int i = 0; while (i < 4 && l[(size_t) i] != clip.longueurMesures) ++i;
                           clip.longueurMesures = l[(size_t) juce::jlimit (0, 4, i + c)]; }); }, actif };
 
+    // Page Mélodie d'une piste de synthé : le générateur de basses et de mélodies
+    auto mel = [this] () -> GenerateurMelodique { const auto* g = melodieVisee(); return g != nullptr ? *g : GenerateurMelodique::parDefaut (StyleMelodique::basseDub); };
+    auto continu = [this] (int encodeur, std::function<float& (GenerateurMelodique&)> champ)
+    {
+        return [this, encodeur, champ] (int pas, bool fin) { modifierMelodie (encodeur, [=] (GenerateurMelodique& g) { auto& v = champ (g); v = juce::jlimit (0.0f, 1.0f, v + (float) pas * (fin ? 0.002f : 0.01f)); }); };
+    };
+
+    pageMelodie[0] = { "Densité"_fr, [mel, pourcent] { return pourcent (mel().densite); }, [mel] { return mel().densite; }, continu (0, [] (GenerateurMelodique& g) -> float& { return g.densite; }), actif };
+    pageMelodie[1] = { "Registre", [mel] { return "Octave " + juce::String (mel().registre); }, [mel] { return (float) mel().registre / 6.0f; },
+                       [this] (int pas, bool) { if (auto c = crantsDiscrets (1, pas)) modifierMelodie (1, [=] (GenerateurMelodique& g) { g.registre = juce::jlimit (0, 6, g.registre + c); }); }, actif };
+    pageMelodie[2] = { "Mouvement", [mel, pourcent] { return pourcent (mel().mouvement); }, [mel] { return mel().mouvement; }, continu (2, [] (GenerateurMelodique& g) -> float& { return g.mouvement; }), actif };
+    pageMelodie[3] = { "Longueur", [mel, pourcent] { return pourcent (mel().longueur); }, [mel] { return mel().longueur; }, continu (3, [] (GenerateurMelodique& g) -> float& { return g.longueur; }), actif };
+    pageMelodie[4] = { "Accents", [mel, pourcent] { return pourcent (mel().accents); }, [mel] { return mel().accents; }, continu (4, [] (GenerateurMelodique& g) -> float& { return g.accents; }), actif };
+    pageMelodie[5] = { "Répétition"_fr, [mel, pourcent] { return pourcent (mel().repetition); }, [mel] { return mel().repetition; }, continu (5, [] (GenerateurMelodique& g) -> float& { return g.repetition; }), actif };
+    pageMelodie[6] = { "Glissés"_fr, [mel, pourcent] { return pourcent (mel().glisses); }, [mel] { return mel().glisses; }, continu (6, [] (GenerateurMelodique& g) -> float& { return g.glisses; }), actif };
+    pageMelodie[7] = { "Style", [mel] { return nomDuStyle (mel().style); }, [mel] { return (float) mel().style / 6.0f; },
+                       [this] (int pas, bool) { if (auto c = crantsDiscrets (7, pas)) modifierMelodie (7, [=] (GenerateurMelodique& g) {
+                           // Changer de style reprend ses réglages de départ, en gardant la graine
+                           const auto graine = g.graine;
+                           g = GenerateurMelodique::parDefaut ((StyleMelodique) juce::jlimit (0, 6, (int) g.style + c));
+                           g.graine = graine; }); }, premier };
+
+    // Page Commun d'une piste de synthé : swing de la piste, graine de la mélodie, longueur du clip
+    pageCommunSynthe[0] = pageCommun[0];
+    pageCommunSynthe[1] = { "Graine", [mel] { return juce::String ((juce::int64) mel().graine); }, [] { return 0.0f; },
+                            [this] (int pas, bool) { if (auto c = crantsDiscrets (1, pas)) modifierMelodie (1, [=] (GenerateurMelodique& g) { g.graine = (juce::uint32) juce::jmax (1, (int) g.graine + c); }); }, actif };
+    pageCommunSynthe[2] = pageCommun[4];
+
     // Page Variation (bouton Clip) : ce que fera Shift + Duplicate
     auto variation = [this] () -> const Variation& { return moteur.getMorceau().variation; };
     pageVariation[0] = { "Quantité"_fr, [variation, pourcent] { return pourcent (variation().quantite); }, [variation] { return variation().quantite; },
@@ -241,11 +269,39 @@ const Generateur* Pilote::generateurVise() const
     return clip != nullptr && clip->generateur ? &*clip->generateur : nullptr;
 }
 
-void Pilote::modifierClipVise (int encodeur, std::function<void (Clip&)> f)
+const GenerateurMelodique* Pilote::melodieVisee() const
 {
-    if (! pisteChoisieEstUneBatterie())
+    const auto c = caseDuPasAPas();
+    const auto* clip = c ? moteur.getMorceau().clip (c->first, c->second) : nullptr;
+    return clip != nullptr && clip->melodie ? &*clip->melodie : nullptr;
+}
+
+void Pilote::modifierMelodie (int encodeur, std::function<void (GenerateurMelodique&)> f)
+{
+    if (pisteChoisieEstUneBatterie())
         return;
 
+    const bool devientGenere = melodieVisee() == nullptr;
+    const auto& piste = moteur.getMorceau().pistes[(size_t) pisteChoisie];
+    const auto* son = sonsDeSynthe::trouver (piste.sonDeSynthe);
+    const auto style = melodies::styleDuSon (son != nullptr ? son->style : juce::String(), piste.son == SonProvisoire::basse);
+
+    modifierClipVise (100 + encodeur, [=] (Clip& c)
+    {
+        // Un clip écrit à la main devient généré (Undo pour revenir) ; le style de départ suit le son de la piste
+        if (! c.melodie)
+            c.melodie = GenerateurMelodique::parDefaut (style);
+
+        f (*c.melodie);
+        c.nom = nomDuStyle (c.melodie->style);
+    });
+
+    if (devientGenere)
+        annoncer ("Mélodie"_fr, "Le clip est maintenant généré (Undo pour revenir)"_fr);
+}
+
+void Pilote::modifierClipVise (int encodeur, std::function<void (Clip&)> f)
+{
     auto cible = caseDuPasAPas();
     const int scene = cible ? cible->second : (caseChoisie && caseChoisie->first == pisteChoisie ? caseChoisie->second : 0);
 
@@ -258,7 +314,7 @@ void Pilote::modifierClipVise (int encodeur, std::function<void (Clip&)> f)
             c = Clip { "Rythme", 1, {} };
 
         f (*c);
-        c->regenerer (m.mesure);
+        c->regenerer (m.mesure, m.gamme);
     }, "clip " + juce::String (encodeur));
 
     if (! cible)
@@ -291,7 +347,14 @@ void Pilote::appliquerVariation (Clip& c, Morceau& m)
 {
     const auto graine = m.prochaineGraine++;
 
-    if (c.generateur)
+    if (c.melodie)
+    {
+        // Mélodie générée : nouvelle graine, densité décalée ; elle reste réglable
+        c.melodie->graine = graine;
+        c.melodie->densite = juce::jlimit (0.0f, 1.0f, c.melodie->densite + m.variation.densite * 0.2f);
+        c.regenerer (m.mesure, m.gamme);
+    }
+    else if (c.generateur)
     {
         // Clip généré : nouvelle graine, densité décalée ; il reste réglable
         auto& g = *c.generateur;
@@ -307,7 +370,7 @@ void Pilote::appliquerVariation (Clip& c, Morceau& m)
         }
 
         g.chaos = juce::jmax (g.chaos, m.variation.quantite * 0.5f);
-        c.regenerer (m.mesure);
+        c.regenerer (m.mesure, m.gamme);
     }
     else
     {
@@ -321,7 +384,7 @@ void Pilote::figerLeClip()
 {
     const auto c = mode == Mode::note ? caseDuPasAPas() : caseChoisie;
 
-    if (! c || moteur.getMorceau().clip (c->first, c->second) == nullptr || ! moteur.getMorceau().clip (c->first, c->second)->generateur)
+    if (! c || moteur.getMorceau().clip (c->first, c->second) == nullptr || ! moteur.getMorceau().clip (c->first, c->second)->estGenere())
     {
         annoncer ("Convert", "Aucun clip généré choisi"_fr);
         return;
@@ -930,8 +993,11 @@ void Pilote::appuyer (int bouton)
         case Bouton::device:
             if (! pisteChoisieEstUneBatterie())
             {
-                page = Page::macros;
-                annoncer ("Device", morceau.pistes[(size_t) pisteChoisie].sonDeSynthe + (moteur.joueAvecSurge (pisteChoisie) ? juce::String() : juce::String (" (Surge XT absent : son provisoire)")));
+                // Device fait tourner les pages : macros du son, mélodie, réglages communs
+                page = page == Page::macros ? Page::melodie : page == Page::melodie ? Page::communSynthe : Page::macros;
+                annoncer ("Device", page == Page::macros ? morceau.pistes[(size_t) pisteChoisie].sonDeSynthe + (moteur.joueAvecSurge (pisteChoisie) ? juce::String() : juce::String (" (Surge XT absent : son provisoire)"))
+                                  : page == Page::melodie ? "Mélodie "_fr + (melodieVisee() ? nomDuStyle (melodieVisee()->style) : juce::String ("(le clip deviendra généré)"_fr))
+                                                          : juce::String ("Swing, graine, longueur"));
                 return;
             }
 

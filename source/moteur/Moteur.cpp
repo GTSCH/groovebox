@@ -155,8 +155,8 @@ void Moteur::modifier (const std::function<void (Morceau&)>& changement, const j
     if (! nouveau.mesure.estValide() || enLecture())
         nouveau.mesure = morceau.mesure;
 
-    // Les clips générés suivent la mesure
-    if (nouveau.mesure != morceau.mesure)
+    // Les clips générés suivent la mesure et la gamme
+    if (nouveau.mesure != morceau.mesure || ! (nouveau.gamme == morceau.gamme))
         nouveau.regenererTout();
 
     if (sortieCasqueDisponible())

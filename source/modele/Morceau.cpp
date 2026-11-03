@@ -22,6 +22,9 @@ namespace
         if (c.generateur)
             objet->setProperty ("generateur", c.generateur->versJson());
 
+        if (c.melodie)
+            objet->setProperty ("melodie", c.melodie->versJson());
+
         return juce::var (objet);
     }
 
@@ -45,6 +48,9 @@ namespace
 
         if (const auto g = v.getProperty ("generateur", {}); g.isObject())
             c.generateur = Generateur::depuisJson (g);
+
+        if (const auto g = v.getProperty ("melodie", {}); g.isObject())
+            c.melodie = GenerateurMelodique::depuisJson (g);
 
         return c;
     }
@@ -220,10 +226,12 @@ juce::String nomDuCalage (Calage c)
     return {};
 }
 
-void Clip::regenerer (const Mesure& m)
+void Clip::regenerer (const Mesure& m, const Gamme& g)
 {
     if (generateur)
         notes = generateurs::generer (*generateur, m, longueurMesures);
+    else if (melodie)
+        notes = melodies::generer (*melodie, m, g, longueurMesures);
 }
 
 float Morceau::swingDeLaPiste (int piste) const
@@ -236,8 +244,8 @@ void Morceau::regenererTout()
 {
     for (auto& s : scenes)
         for (auto& c : s.clips)
-            if (c && c->generateur)
-                c->regenerer (mesure);
+            if (c && c->estGenere())
+                c->regenerer (mesure, gamme);
 }
 
 bool Scene::estVide() const

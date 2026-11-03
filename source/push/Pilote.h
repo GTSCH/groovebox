@@ -24,7 +24,7 @@ public:
     EtatSurface calculerEtat() const;
     void dessinerEcran (juce::Image&) const;
 
-    enum class Page { mix, clic, device, generateur, commun, variation, browse, gamme, macros };
+    enum class Page { mix, clic, device, generateur, commun, variation, browse, gamme, macros, melodie, communSynthe };
     enum class Mode { session, note };
     Page getPage() const                    { return page; }
     Mode getMode() const                    { return mode; }
@@ -81,7 +81,7 @@ private:
     bool copieFaite = false;
     std::array<bool, nombreEncodeurs> touches {};
     std::array<int, nombreEncodeurs> crans {};
-    std::array<Reglage, 8> pageClic, pageMix, pageDevice, pageBrowse, pageEuclide, pageCartes, pageCommun, pageVariation, pageGamme, pageMacros;
+    std::array<Reglage, 8> pageClic, pageMix, pageDevice, pageBrowse, pageEuclide, pageCartes, pageCommun, pageVariation, pageGamme, pageMacros, pageMelodie, pageCommunSynthe;
     int voixEuclidienne = 0;
     bool varierEnDupliquant = false;
     Annonce annonce;
@@ -100,6 +100,8 @@ private:
             case Page::variation: return pageVariation;
             case Page::gamme:   return pageGamme;
             case Page::macros:  return pageMacros;
+            case Page::melodie: return pageMelodie;
+            case Page::communSynthe: return pageCommunSynthe;
             case Page::generateur:
             {
                 const auto* g = generateurVise();
@@ -113,6 +115,8 @@ private:
     bool pisteChoisieEstUneBatterie() const;
     const Generateur* generateurVise() const;
     void modifierGenerateur (int encodeur, std::function<void (Generateur&)>);
+    const GenerateurMelodique* melodieVisee() const;
+    void modifierMelodie (int encodeur, std::function<void (GenerateurMelodique&)>);
     void modifierClipVise (int encodeur, std::function<void (Clip&)>);
     void appliquerVariation (Clip&, Morceau&);
     void figerLeClip();

@@ -27,6 +27,7 @@ set (SOURCES_MOTEUR
     source/modele/Kit.cpp
     source/modele/Generateurs.cpp
     source/modele/Gamme.cpp
+    source/modele/Melodies.cpp
     source/moteur/BipPlugin.cpp
     source/moteur/ClicPlugin.cpp
     source/moteur/InstrumentProvisoire.cpp
