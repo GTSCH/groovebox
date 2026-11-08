@@ -146,7 +146,7 @@ void PageJeu::lectureOuArret()
     if (moteur.enLecture())
         moteur.arreter();
     else
-        moteur.lancer();
+        moteur.lancerOuRejouer();
 
     mettreAJour();
 }

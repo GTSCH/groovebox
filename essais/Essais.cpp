@@ -894,6 +894,36 @@ public:
 
             bouton (Bouton::session);
             expectEquals (pilote.getAnnonce().titre, juce::String ("Session"), "bouton reconnu, annoncé à l'écran"_fr);
+
+            // L'annonce reste dans le bandeau du haut : les 8 colonnes de réglages restent visibles, même en tournant un encodeur
+            bouton (Bouton::mix);
+            tourner (0, 2);
+            juce::Image image (juce::Image::RGB, EtatSurface::largeurEcran, EtatSurface::hauteurEcran, true);
+            pilote.dessinerEcran (image);
+
+            for (int i = 0; i < 8; ++i)
+            {
+                bool barre = false;
+                const int x0 = i * EtatSurface::largeurEcran / 8;
+
+                for (int x = x0 + 16; x < x0 + 30 && ! barre; ++x)
+                    barre = image.getPixelAt (x, 140) != juce::Colour (0xff101216);
+
+                expect (barre, "colonne " + juce::String (i + 1) + " visible pendant l'annonce");
+            }
+
+            if (auto chemin = juce::SystemStats::getEnvironmentVariable ("GROOVEBOX_CAPTURE", {}); chemin.isNotEmpty())
+            {
+                juce::FileOutputStream sortie (juce::File (chemin).getNonexistentSibling());
+                juce::PNGImageFormat().writeImageToStream (image, sortie);
+            }
+
+            // Toutes les touches sont éclairées, au moins faiblement
+            const auto etat = pilote.calculerEtat();
+
+            for (int b : { 3, 9, 28, 29, 30, 31, 35, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+                           85, 86, 87, 88, 89, 90, 110, 111, 112, 113, 116, 117, 118, 119 })
+                expect (etat.boutons[(size_t) b] != palette::noir, nomDuBouton (b) + " éclairé"_fr);
         }
 
         beginTest ("Session au Push : pads, scènes, effacer, dupliquer, annuler"_fr);
@@ -3828,7 +3858,7 @@ public:
             Pilote pilote (moteur, surface);
             auto bouton = [&] (Bouton b) { surface.recevoir ({ T::bouton, (int) b, 127, true }); surface.recevoir ({ T::bouton, (int) b, 0, false }); };
 
-            expectEquals (pilote.calculerEtat().boutons[(size_t) Bouton::record], palette::grisFonce);
+            expectEquals (pilote.calculerEtat().boutons[(size_t) Bouton::record], palette::grisClair);
             bouton (Bouton::record);
             expect (moteur.priseEnCours(), "Record : prise commencée");
 
@@ -4089,6 +4119,466 @@ public:
     }
 };
 
+//==============================================================================
+class EssaisRejeu  : public juce::UnitTest
+{
+public:
+    EssaisRejeu()  : juce::UnitTest ("Rejeu", "groovebox") {}
+
+    /** Ce qu'on relève toutes les 250 ms : la scène de chaque piste, le volume de la nappe, le niveau du son. */
+    struct Releve
+    {
+        std::vector<std::array<int, 4>> scenes;
+        std::vector<float> volumes, niveaux;
+    };
+
+    static Morceau morceauDuRejeu()
+    {
+        auto m = EssaisEnchainements::morceauDEnchainement();
+        m.scenes[0].nom = "Intro";
+        m.scenes[1].nom = "Groove";
+        m.scenes[2].nom = "Plein";
+        m.scenes[0].clips[2] = EssaisEnchainements::clipTenu ("Do", 60);
+        m.scenes[1].clips[2] = EssaisEnchainements::clipTenu ("Sol", 67);
+        m.scenes[2].clips[2] = EssaisEnchainements::clipTenu ("Mi", 64);
+        m.scenes[1].clips[1] = EssaisEnchainements::clipTenu ("Basse", 36);
+        m.scenes[0].clips[3] = EssaisEnchainements::clipTenu ("Lead", 72);
+        return m;
+    }
+
+    /** Joue par tranches de 250 ms, en relevant l'état après chaque tranche, et en faisant les gestes prévus. */
+    static Releve jouer (Moteur& moteur, CarteSimulee& carte, double secondes, const std::map<int, std::function<void()>>& gestes = {})
+    {
+        Releve r;
+        const int tranches = (int) (secondes * 4.0);
+
+        for (int k = 0; k < tranches; ++k)
+        {
+            if (auto g = gestes.find (k); g != gestes.end())
+                g->second();
+
+            // Le volume au début de la tranche (juste après les gestes), les scènes à sa fin
+            r.volumes.push_back (moteur.getMorceau().pistes[2].volumeDb);
+            auto audio = EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde / 4);
+            r.scenes.push_back ({ moteur.sceneJouee (0), moteur.sceneJouee (1), moteur.sceneJouee (2), moteur.sceneJouee (3) });
+            r.niveaux.push_back (niveauEfficace (audio, 0));
+        }
+
+        return r;
+    }
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+        const auto racine = EssaisPrises::dossierDEssai();
+
+        // La prise d'origine : Intro, des crans de volume, une note, fondu vers Groove, coupe vers Plein, un clip seul
+        Releve original;
+        Deroule deroule;
+        Morceau avantLaPrise;
+
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDuRejeu(), &banqueEssai());
+            moteur.dossierDesPrises = [racine] { return racine; };
+            avantLaPrise = moteur.getMorceau();
+            moteur.demarrerPrise();
+            moteur.lancerScene (0);
+
+            std::map<int, std::function<void()>> gestes;
+
+            for (int k = 1; k <= 6; ++k)
+                gestes[3 + k] = [&moteur, k] { moteur.modifier ([k] (Morceau& mm) { mm.pistes[2].volumeDb = -2.0f * (float) k; }, "encodeur 2"); };
+
+            gestes[10] = [&moteur] { moteur.jouerNote (4, 76, 100); };
+            gestes[12] = [&moteur] { moteur.relacherNote (4, 76); };
+            gestes[14] = [&moteur] { moteur.lancerScene (1, EssaisEnchainements::enchainement (TypeEnchainement::fondu, 1)); };   // 3,5 s
+            gestes[30] = [&moteur] { moteur.lancerScene (2, EssaisEnchainements::enchainement (TypeEnchainement::coupe, 1)); };   // 7,5 s
+            gestes[38] = [&moteur] { moteur.lancerClip (3, 0); };                                                                  // 9,5 s
+            original = jouer (moteur, carte, 12.0, gestes);
+
+            const auto dossier = *moteur.arreterPrise();
+            moteur.arreter();
+            deroule = retouche::decouper (*Prise::charger (dossier.getChildFile ("prise.json")), dossier.getFileName());
+            deroule.nom = "Essai";
+        }
+
+        beginTest ("Un déroulé tiré d'une prise se rejoue à l'identique"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDuRejeu(), &banqueEssai());
+            const auto avant = moteur.getMorceau();
+
+            expect (moteur.rejouer (deroule));
+            expect (moteur.rejeuEnCours() && moteur.enLecture());
+            const auto rejoue = jouer (moteur, carte, 12.0);
+
+            int scenesDifferentes = 0, volumesDifferents = 0;
+            double ecartDesNiveaux = 0.0, somme = 0.0;
+
+            for (size_t k = 0; k < original.scenes.size() && k < rejoue.scenes.size(); ++k)
+            {
+                scenesDifferentes += original.scenes[k] != rejoue.scenes[k] ? 1 : 0;
+                volumesDifferents += std::abs (original.volumes[k] - rejoue.volumes[k]) > 0.01f ? 1 : 0;
+                ecartDesNiveaux += std::abs (original.niveaux[k] - rejoue.niveaux[k]);
+                somme += original.niveaux[k];
+            }
+
+            logMessage ("  relevés différents : scènes " + juce::String (scenesDifferentes) + ", volume " + juce::String (volumesDifferents)
+                        + " sur " + juce::String ((int) original.scenes.size()) + " ; écart de niveau " + juce::String (100.0 * ecartDesNiveaux / somme, 2) + " %");
+            expectEquals (scenesDifferentes, 0, "les mêmes clips aux mêmes instants");
+            expectEquals (volumesDifferents, 0, "les mêmes réglages au même moment");
+            expect (ecartDesNiveaux < 0.03 * somme, "le même son");
+
+            moteur.avancer();
+            expect (! moteur.rejeuEnCours(), "à la fin du déroulé, le rejeu s'arrête");
+            expect (! moteur.enLecture());
+            expect (moteur.getMorceau() == avant, "le morceau revient tel qu'il était");
+            expect (! moteur.peutAnnuler(), "le rejeu ne laisse rien dans l'historique");
+        }
+
+        beginTest ("Sections déplacées : le déroulé suit le nouvel ordre"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDuRejeu(), &banqueEssai());
+            auto d = deroule;
+            retouche::deplacer (d, 2, -1);      // Intro, Plein, Groove
+            expect (moteur.rejouer (d));
+            const auto r = jouer (moteur, carte, 9.0);
+
+            // Intro jusqu'à 4 s, Plein de 4 à 7,4 s (1,7 mesure), puis Groove
+            expectEquals (r.scenes[12][2], 0, "Intro d'abord");
+            expectEquals (r.scenes[18][2], 2, "puis Plein");
+            expectEquals (r.scenes[18][1], 1, "comme pendant la prise, la basse de Groove continue dans Plein (case vide)");
+            expectEquals (r.scenes[34][2], 1, "puis Groove");
+            expectEquals (r.scenes[34][1], 1, "avec sa basse");
+            moteur.arreter();
+        }
+
+        beginTest ("Reprendre la main sur une piste, puis la rendre au déroulé"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDuRejeu(), &banqueEssai());
+            moteur.rejouer (deroule);
+            jouer (moteur, carte, 0.5);
+
+            // On tourne le volume de la nappe : elle est à nous, les crans du déroulé ne la touchent plus
+            moteur.modifier ([] (Morceau& mm) { mm.pistes[2].volumeDb = -30.0f; });
+            expect (moteur.pisteReprise (2), "la nappe est reprise");
+            expect (! moteur.pisteReprise (1));
+            jouer (moteur, carte, 2.5);
+            expectWithinAbsoluteError (moteur.getMorceau().pistes[2].volumeDb, -30.0f, 1.0e-4f, "le déroulé ne la touche plus");
+            expectEquals (moteur.etatDuRejeu()->pistesReprises, 1);
+
+            moteur.rendreLaMain (2);
+            expect (! moteur.pisteReprise (2));
+            expectWithinAbsoluteError (moteur.getMorceau().pistes[2].volumeDb, -12.0f, 1.0e-4f, "rendue : elle revient où en est le déroulé");
+
+            // Lancer un clip reprend sa piste ; lancer une scène reprend tout
+            moteur.lancerClip (3, 0);
+            expect (moteur.pisteReprise (3));
+            moteur.lancerScene (2);
+            expectEquals (moteur.etatDuRejeu()->pistesReprises, nombreDePistes, "une scène lancée à la main : tout est repris");
+            jouer (moteur, carte, 1.5);     // 4,5 s : Groove a commencé dans le déroulé
+            expectEquals (moteur.etatDuRejeu()->numero, 2);
+            expectEquals (moteur.sceneJouee (2), 2, "c'est la scène lancée qui joue, pas Groove");
+            moteur.rendreLaMain (-1);
+            expectEquals (moteur.etatDuRejeu()->pistesReprises, 0);
+            jouer (moteur, carte, 2.0);     // 6,5 s
+            expectEquals (moteur.sceneJouee (2), 1, "rendu : le déroulé remet Groove, à la mesure suivante");
+            expectEquals (moteur.sceneJouee (1), 1, "et sa basse");
+            moteur.arreter();
+        }
+
+        beginTest ("Section ouverte : elle tourne jusqu'à ce qu'on passe à la suite"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDuRejeu(), &banqueEssai());
+            auto d = deroule;
+            d.sections[0].ouverte = true;
+            moteur.rejouer (d);
+            jouer (moteur, carte, 10.5);
+            auto e = moteur.etatDuRejeu();
+            expect (e && e->numero == 1 && e->ouverte, "après plus de deux tours, toujours dans Intro");
+            expectEquals (moteur.sceneJouee (2), 0);
+            expectWithinAbsoluteError (moteur.getMorceau().pistes[2].volumeDb, -12.0f, 1.0e-4f, "les crans rejoués à chaque tour");
+
+            moteur.passerALaSuite();
+            e = moteur.etatDuRejeu();
+            expect (e && e->suiteDemandee && e->mesuresRestantes <= 1.0, "suite à la prochaine mesure");
+            jouer (moteur, carte, 2.5);
+            e = moteur.etatDuRejeu();
+            expect (e && e->numero == 2, "on est passé à Groove");
+            expectEquals (moteur.sceneJouee (2), 1);
+            moteur.arreter();
+        }
+
+        beginTest ("Rejouer depuis une section, et le clic pendant le rejeu"_fr);
+        {
+            CarteSimulee carte (engine, 4);
+            auto m = morceauDuRejeu();
+            Moteur moteur (engine, m, &banqueEssai());
+            auto d = deroule;
+
+            for (auto& s : d.sections)
+            {
+                s.etat.getDynamicObject()->setProperty ("musiqueDansCasqueDb", -60.0);
+                s.etat.getProperty ("clic", {}).getDynamicObject()->setProperty ("actif", true);
+            }
+
+            expect (moteur.rejouer (d, 1));
+            const auto e = moteur.etatDuRejeu();
+            expect (e && e->numero == 2 && e->section == "Groove", "on commence à Groove");
+            EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde / 2);
+            expectEquals (moteur.sceneJouee (2), 1);
+            expectEquals (moteur.sceneJouee (3), 0, "le lead d'Intro, qui jouait au début de Groove, joue aussi");
+
+            auto audio = carte.jouer (2 * uneSeconde);
+            DetecteurDeCoups detecteur;
+            detecteur.analyser (audio, 2);
+            expect (detecteur.coups.size() == 4, "le clic continue dans le casque : " + juce::String ((int) detecteur.coups.size()) + " coups en 2 s");
+            moteur.arreter();
+        }
+
+        beginTest ("Push : Play rejoue le déroulé choisi, Shift + Page droite passe à la suite"_fr);
+        {
+            using T = Evenement::Type;
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDuRejeu(), &banqueEssai());
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            auto appui = [&] (Bouton b, bool bas) { surface.recevoir ({ T::bouton, (int) b, bas ? 127 : 0, bas }); };
+            auto bouton = [&] (Bouton b) { appui (b, true); appui (b, false); };
+
+            auto d = deroule;
+            d.sections[0].ouverte = true;
+            moteur.deroulePourPlay = d;
+            bouton (Bouton::play);
+            expect (moteur.rejeuEnCours(), "Play : rejeu du déroulé choisi");
+            jouer (moteur, carte, 1.0);
+
+            juce::Image image (juce::Image::RGB, EtatSurface::largeurEcran, EtatSurface::hauteurEcran, true);
+            pilote.dessinerEcran (image);
+            {
+                const auto fichier = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("groovebox-push-rejeu.png");
+                fichier.deleteFile();
+                juce::FileOutputStream flux (fichier);
+                juce::PNGImageFormat().writeImageToStream (image, flux);
+            }
+
+            appui (Bouton::shift, true);
+            bouton (Bouton::pageDroite);
+            appui (Bouton::shift, false);
+            expect (moteur.etatDuRejeu()->suiteDemandee, "Shift + Page droite : suite demandée");
+
+            moteur.modifier ([] (Morceau& mm) { mm.pistes[5].volumeDb = -20.0f; });
+            expect (moteur.pisteReprise (5));
+            appui (Bouton::shift, true);
+            bouton ((Bouton) (premierBoutonDuBas + 5));
+            appui (Bouton::shift, false);
+            expect (! moteur.pisteReprise (5), "Shift + bouton de piste : rendue au déroulé");
+
+            bouton (Bouton::play);
+            expect (! moteur.rejeuEnCours() && ! moteur.enLecture(), "Play pendant le rejeu : arrêt");
+        }
+    }
+};
+
+//==============================================================================
+/** Le critère de l'étape 9 : une impro de 10 minutes devient un déroulé de 4 minutes rejoué à l'identique.
+    Long (environ une minute) : hors des essais habituels, se lance avec l'argument « Rejeu long ». */
+class EssaisRejeuLong  : public juce::UnitTest
+{
+public:
+    EssaisRejeuLong()  : juce::UnitTest ("Rejeu long", "groovebox-long") {}
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+        const auto racine = EssaisPrises::dossierDEssai();
+        auto m = EssaisRejeu::morceauDuRejeu();
+        m.scenes[3].nom = "Pause";
+        m.scenes[3].clips[2] = EssaisEnchainements::clipTenu ("La", 69);
+        m.scenes[2].clips[1] = EssaisEnchainements::clipTenu ("Basse 2", 41);
+
+        // L'impro : un geste toutes les 2 secondes, tirés au sort (toujours les mêmes)
+        EssaisRejeu::Releve original;
+        Deroule deroule;
+        double mesure1 = 0.0;
+
+        beginTest ("Une impro de 10 minutes jouée et capturée"_fr);
+        {
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, m, &banqueEssai());
+            moteur.dossierDesPrises = [racine] { return racine; };
+            mesure1 = moteur.tempsDeLaMesure1();
+            moteur.demarrerPrise();
+            moteur.lancerScene (0);
+
+            juce::Random hasard (7);
+            std::map<int, std::function<void()>> gestes;
+
+            for (int k = 6; k < 4 * 600; k += 8)
+            {
+                const int choix = hasard.nextInt (10);
+                const int scene = hasard.nextInt (4), piste = 1 + hasard.nextInt (3);
+                const float x = hasard.nextFloat();
+
+                if (choix < 3)
+                    gestes[k] = [&moteur, scene, x] { moteur.lancerScene (scene, EssaisEnchainements::enchainement ((TypeEnchainement) juce::jlimit (0, 4, (int) (x * 5.0f)), 1 + (int) (x * 1.9f))); };
+                else if (choix < 7)
+                    gestes[k] = [&moteur, piste, x] { moteur.modifier ([piste, x] (Morceau& mm) { mm.pistes[(size_t) piste].volumeDb = -20.0f * x; mm.pistes[(size_t) piste].panoramique = x - 0.5f; }, "encodeur " + juce::String (piste)); };
+                else if (choix < 9)
+                    gestes[k] = [&moteur, piste, scene] { moteur.lancerClip (piste, scene); };
+                else
+                    gestes[k] = [&moteur, x] { moteur.filtreGlobal (0.5f + 0.3f * (x - 0.5f)); };
+            }
+
+            const auto debut = juce::Time::getMillisecondCounterHiRes();
+            original = EssaisRejeu::jouer (moteur, carte, 600.0, gestes);
+            logMessage ("  10 minutes jouées en " + juce::String ((juce::Time::getMillisecondCounterHiRes() - debut) / 1000.0, 1) + " s");
+
+            const auto dossier = *moteur.arreterPrise();
+            moteur.arreter();
+            const auto prise = *Prise::charger (dossier.getChildFile ("prise.json"));
+            logMessage ("  " + juce::String ((int) prise.evenements.size()) + " gestes");
+            deroule = retouche::decouper (prise, dossier.getFileName());
+            expect (deroule.sections.size() > 20, juce::String ((int) deroule.sections.size()) + " sections");
+            expectWithinAbsoluteError (deroule.longueur() / 2.0, 600.0, 1.0, "10 minutes de sections");
+        }
+
+        beginTest ("4 minutes prises au milieu, rejouées à l'identique"_fr);
+        {
+            // On garde les sections de la 3e à la 7e minute, en commençant par une section entrée en coupe (sans fondu à moitié fait)
+            Deroule court;
+            court.nom = "4 minutes";
+            double debut = -1.0;
+
+            for (auto& s : deroule.sections)
+            {
+                const double secondes = (s.debutDansLaPrise - mesure1) / 2.0;
+
+                if (debut < 0.0 && secondes >= 180.0 && s.entree && s.entree->type == TypeEnchainement::coupe)
+                    debut = secondes;
+
+                if (debut >= 0.0 && secondes < debut + 240.0)
+                    court.sections.push_back (s);
+            }
+
+            expect (debut > 0.0 && court.sections.size() > 5, "un passage de 4 minutes");
+            logMessage ("  de " + juce::String (debut, 0) + " s à " + juce::String (debut + court.longueur() / 2.0, 0) + " s, "
+                        + juce::String ((int) court.sections.size()) + " sections");
+
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, m, &banqueEssai());
+            expect (moteur.rejouer (court));
+            const auto rejoue = EssaisRejeu::jouer (moteur, carte, court.longueur() / 2.0);
+            const int decalage = (int) std::round (debut * 4.0);
+
+            int scenesDifferentes = 0, volumesDifferents = 0;
+            double ecart = 0.0, somme = 0.0;
+
+            for (size_t k = 0; k < rejoue.scenes.size() && k + (size_t) decalage < original.scenes.size(); ++k)
+            {
+                const auto o = (size_t) decalage + k;
+                if (rejoue.scenes[k] != original.scenes[o])
+                {
+                    ++scenesDifferentes;
+                    auto texteDe = [] (const std::array<int, 4>& a) { return juce::String (a[0]) + "," + juce::String (a[1]) + "," + juce::String (a[2]) + "," + juce::String (a[3]); };
+                    logMessage ("  à " + juce::String ((double) o / 4.0, 2) + " s : rejoué " + texteDe (rejoue.scenes[k]) + ", d'origine " + texteDe (original.scenes[o])
+                                + " ; niveau rejoué " + juce::String (rejoue.niveaux[k], 5) + ", d'origine " + juce::String (original.niveaux[o], 5));
+                }
+
+                volumesDifferents += std::abs (rejoue.volumes[k] - original.volumes[o]) > 0.01f ? 1 : 0;
+                ecart += std::abs (rejoue.niveaux[k] - original.niveaux[o]);
+                somme += original.niveaux[o];
+            }
+
+            logMessage ("  relevés différents : scènes " + juce::String (scenesDifferentes) + ", volume " + juce::String (volumesDifferents)
+                        + " sur " + juce::String ((int) rejoue.scenes.size()) + " ; écart de niveau " + juce::String (100.0 * ecart / juce::jmax (1.0e-9, somme), 2) + " %");
+            // Pendant qu'un enchaînement passe d'une voix à l'autre, les deux clips jouent : la « scène jouée » relevée peut
+            // différer d'une tranche sans que le son change (vérifié ci-dessus, niveau par niveau)
+            expect (scenesDifferentes <= (int) rejoue.scenes.size() / 100, "les mêmes clips aux mêmes instants");
+            expectEquals (volumesDifferents, 0, "les mêmes réglages");
+            expect (ecart < 0.01 * somme, "le même son");
+            EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde / 2);
+            expect (! moteur.rejeuEnCours(), "fini au bout des 4 minutes");
+        }
+    }
+};
+
+//==============================================================================
+/** La Démo 2 rejouée en entier, avec Surge XT : niveaux de chaque partie et fichier à écouter. Hors série (« Démo 2 »). */
+class EssaisDemo2  : public juce::UnitTest
+{
+public:
+    EssaisDemo2()  : juce::UnitTest ("Démo 2"_fr, "groovebox-long") {}
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+
+        beginTest ("La Démo 2 : 6 scènes, un déroulé d'un bout à l'autre"_fr);
+        const auto m = morceauDeDemonstration2();
+        const auto d = derouleDeLaDemo2 (m);
+        expect (m.mesure == Mesure::standard (6, 8));
+        expectEquals ((int) d.sections.size(), 6);
+        expectWithinAbsoluteError (d.longueur() / 6.0, 36.0, 1.0e-6, "36 mesures");
+        expect (Morceau::depuisJson (m.versJson()) == m, "se sauvegarde et se relit");
+
+        beginTest ("Rejouée avec Surge XT : chaque partie sonne, sans saturer"_fr);
+        surge::autoriser (true);
+        CarteSimulee carte (engine, 2);
+        Moteur moteur (engine, m, &banqueEssai());
+        logMessage (moteur.joueAvecSurge (1) ? "  avec Surge XT" : "  sans Surge XT (sons provisoires)");
+        expect (moteur.rejouer (d));
+
+        juce::AudioBuffer<float> tout (2, 0);
+        std::vector<std::pair<juce::String, int>> debuts;
+        juce::String section;
+
+        for (int k = 0; k < 4 * 75 && moteur.rejeuEnCours(); ++k)
+        {
+            if (auto e = moteur.etatDuRejeu(); e && e->section != section)
+            {
+                section = e->section;
+                debuts.push_back ({ section, tout.getNumSamples() });
+            }
+
+            auto morceau = EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde / 4);
+            const int avant = tout.getNumSamples();
+            tout.setSize (2, avant + morceau.getNumSamples(), true, true);
+
+            for (int c = 0; c < 2; ++c)
+                tout.copyFrom (c, avant, morceau, c, 0, morceau.getNumSamples());
+        }
+
+        surge::autoriser (false);
+        expect (! moteur.rejeuEnCours(), "le déroulé va jusqu'au bout");
+        logMessage ("  durée " + juce::String (tout.getNumSamples() / frequence, 1) + " s, crête "
+                    + juce::String (juce::Decibels::gainToDecibels (tout.getMagnitude (0, tout.getNumSamples())), 1) + " dB");
+        expect (tout.getMagnitude (0, tout.getNumSamples()) < 0.95f, "sous la protection de sortie");
+
+        debuts.push_back ({ "fin", tout.getNumSamples() });
+
+        for (size_t i = 0; i + 1 < debuts.size(); ++i)
+        {
+            const float niveau = niveauEfficace (tout, 0, debuts[i].second, debuts[i + 1].second);
+            logMessage ("  " + debuts[i].first + " : " + juce::String (juce::Decibels::gainToDecibels (niveau), 1) + " dB efficaces");
+            expect (niveau > 0.005f, debuts[i].first + " sonne");
+        }
+
+        const auto fichier = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("Démo 2.wav"_fr);
+        fichier.deleteFile();
+        juce::WavAudioFormat wav;
+
+        if (auto ecrivain = std::unique_ptr<juce::AudioFormatWriter> (wav.createWriterFor (new juce::FileOutputStream (fichier), frequence, 2, 24, {}, 0)))
+            ecrivain->writeFromAudioSampleBuffer (tout, 0, tout.getNumSamples());
+
+        logMessage ("  fichier : " + fichier.getFullPathName());
+    }
+};
+
 static EssaisModele essaisModele;
 static EssaisSorties essaisSorties;
 static EssaisHorloge essaisHorloge;
@@ -4103,6 +4593,9 @@ static EssaisEffets essaisEffets;
 static EssaisEnchainements essaisEnchainements;
 static EssaisPrises essaisPrises;
 static EssaisRetouche essaisRetouche;
+static EssaisRejeu essaisRejeu;
+static EssaisRejeuLong essaisRejeuLong;
+static EssaisDemo2 essaisDemo2;
 
 } // namespace groovebox
 

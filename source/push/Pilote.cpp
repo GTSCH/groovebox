@@ -767,13 +767,7 @@ void Pilote::traiter (const Evenement& e)
             break;
 
         case Evenement::Type::encodeurTouche:
-            touches[(size_t) e.numero] = e.appuye;
-
-            if (e.appuye && e.numero < 8 && reglages()[(size_t) e.numero].valeur)
-            {
-                const auto& r = reglages()[(size_t) e.numero];
-                annoncer (page == Page::mix ? moteur.getMorceau().pistes[(size_t) e.numero].nom : r.nom, r.valeur());
-            }
+            touches[(size_t) e.numero] = e.appuye;     // la colonne touchée s'éclaire ; pas d'annonce, tout reste visible
             break;
 
         case Evenement::Type::bandeTouchee:
@@ -833,10 +827,7 @@ void Pilote::tournerEncodeur (int encodeur, int pas)
         const auto& r = reglages()[(size_t) encodeur];
 
         if (r.tourner)
-        {
             r.tourner (pas, fin);
-            annoncer (page == Page::mix ? moteur.getMorceau().pistes[(size_t) encodeur].nom : r.nom, r.valeur());
-        }
 
         return;
     }
@@ -1050,6 +1041,11 @@ void Pilote::appuyerPiste (int piste)
         moteur.arreterPiste (piste);
         annoncer (p.nom, "Arrêt au prochain calage"_fr);
     }
+    else if (shift() && moteur.rejeuEnCours())
+    {
+        moteur.rendreLaMain (piste);
+        annoncer (p.nom, "Rendue au déroulé"_fr);
+    }
     else
     {
         annoncer ("Piste "_fr + juce::String (piste + 1), p.nom);
@@ -1071,12 +1067,21 @@ void Pilote::appuyer (int bouton)
     switch ((Bouton) bouton)
     {
         case Bouton::play:
+            // Shift + Play pendant un rejeu : rendre la main au déroulé sur toutes les pistes
+            if (shift() && moteur.rejeuEnCours())
+            {
+                moteur.rendreLaMain (-1);
+                annoncer ("Rejeu", "Le déroulé reprend toutes les pistes"_fr);
+                return;
+            }
+
             if (moteur.enLecture())
                 moteur.arreter();
             else
-                moteur.lancer();
+                moteur.lancerOuRejouer();
 
-            annoncer ("Play", moteur.enLecture() ? "Lecture" : juce::String ("Arrêt"_fr));
+            annoncer ("Play", moteur.rejeuEnCours() ? "Rejeu de « "_fr + moteur.etatDuRejeu()->deroule + " »"_fr
+                                                    : moteur.enLecture() ? juce::String ("Lecture") : juce::String ("Arrêt"_fr));
             return;
 
         case Bouton::metronome:
@@ -1272,6 +1277,18 @@ void Pilote::appuyer (int bouton)
 
         case Bouton::pageGauche:
         case Bouton::pageDroite:
+            // Shift + Page droite pendant un rejeu : quitter la section ouverte à la prochaine mesure
+            if (shift() && (Bouton) bouton == Bouton::pageDroite && moteur.rejeuEnCours())
+            {
+                const auto e = moteur.etatDuRejeu();
+                moteur.passerALaSuite();
+                const auto apres = moteur.etatDuRejeu();
+                annoncer ("Rejeu", apres && apres->suiteDemandee ? "Suite à la prochaine mesure"_fr
+                                   : e && ! e->ouverte ? juce::String ("La section n'est pas ouverte : elle suit son cours")
+                                                       : juce::String ("Déjà demandé"_fr));
+                return;
+            }
+
             if (page == Page::mix || page == Page::envoisDelay || page == Page::envoisReverb || page == Page::departs)
             {
                 static constexpr Page pagesDuMix[] = { Page::mix, Page::envoisDelay, Page::envoisReverb, Page::departs };
@@ -1490,7 +1507,17 @@ EtatSurface Pilote::calculerEtat() const
     }
 
     auto blanc = [&etat] (Bouton b, bool fort) { etat.boutons[(size_t) b] = fort ? palette::blancFort : palette::blancFaible; };
-    auto couleur = [&etat] (Bouton b, bool fort) { etat.boutons[(size_t) b] = fort ? palette::blanc : palette::grisFonce; };
+    auto couleur = [&etat] (Bouton b, bool fort) { etat.boutons[(size_t) b] = fort ? palette::blanc : palette::grisClair; };
+
+    // Toutes les touches restent lisibles : celles qui ne servent pas encore à peine éclairées, les autres en blanc faible
+    for (auto b : { Bouton::layout, Bouton::master, Bouton::addTrack, Bouton::repeat, Bouton::fixedLength, Bouton::gauche, Bouton::droite })
+        etat.boutons[(size_t) b] = palette::blancVeille;
+
+    for (auto b : { Bouton::pageGauche, Bouton::pageDroite, Bouton::octaveHaut, Bouton::octaveBas, Bouton::haut, Bouton::bas,
+                    Bouton::undo, Bouton::doubleLoop, Bouton::device, Bouton::browse, Bouton::clip, Bouton::convert })
+        etat.boutons[(size_t) b] = palette::blancVeille;
+
+    etat.boutons[(size_t) Bouton::automate] = palette::grisClair;
 
     etat.boutons[(size_t) Bouton::play] = p.enLecture ? palette::vert : palette::grisClair;
     blanc (Bouton::metronome, morceau.clic.actif);
@@ -1516,7 +1543,7 @@ EtatSurface Pilote::calculerEtat() const
 
     // Record : rouge qui clignote pendant une prise
     etat.boutons[(size_t) Bouton::record] = moteur.priseEnCours() ? (std::fmod (juce::Time::getMillisecondCounterHiRes(), 1000.0) < 600.0 ? palette::rouge : palette::grisFonce)
-                                                                   : palette::grisFonce;
+                                                                   : palette::grisClair;
 
     if (page == Page::mix || page == Page::envoisDelay || page == Page::envoisReverb || page == Page::departs)
     {
@@ -1530,13 +1557,12 @@ EtatSurface Pilote::calculerEtat() const
         if (octaves[(size_t) pisteChoisie] > 0) blanc (Bouton::octaveBas, false);
     }
 
-    if (morceau.pistes[(size_t) pisteChoisie].estUneBatterie())
-    {
-        blanc (Bouton::device, page == Page::device || page == Page::generateur || page == Page::commun);
-        blanc (Bouton::clip, page == Page::variation);
-        blanc (Bouton::convert, generateurVise() != nullptr);
-        blanc (Bouton::browse, page == Page::browse);
-    }
+    // Device, Browse, Clip et Convert servent sur toutes les pistes
+    blanc (Bouton::device, page == Page::device || page == Page::generateur || page == Page::commun || page == Page::macros
+                           || page == Page::melodie || page == Page::communSynthe || page == Page::effet);
+    blanc (Bouton::clip, page == Page::variation);
+    blanc (Bouton::convert, generateurVise() != nullptr || melodieVisee() != nullptr);
+    blanc (Bouton::browse, page == Page::browse);
 
     if (mode == Mode::note)
     {
@@ -1573,13 +1599,29 @@ void Pilote::dessinerEcran (juce::Image& image) const
 
     g.fillAll (fond);
 
-    // Bandeau permanent : tempo, mesure, position, clic
-    g.setColour (texte);
-    g.setFont (juce::FontOptions (32.0f, juce::Font::bold));
-    g.drawText (formaterTempo (morceau.tempo), juce::Rectangle<float> (14.0f, 4.0f, 200.0f, 40.0f), juce::Justification::centredLeft);
+    // Bandeau permanent : tempo, mesure, position, clic ; pendant un rejeu, la section en cours, ce qui reste et la suivante
+    if (const auto r = moteur.etatDuRejeu())
+    {
+        g.setColour (actif);
+        g.setFont (juce::FontOptions (30.0f, juce::Font::bold));
+        g.drawFittedText (r->section + (r->ouverte && ! r->suiteDemandee ? juce::String (" (ouverte)") : juce::String()),
+                          juce::Rectangle<int> (14, 4, 300, 40), juce::Justification::centredLeft, 1, 0.6f);
+        g.setColour (texte);
+        g.setFont (juce::FontOptions (24.0f));
+        const auto reste = r->ouverte && ! r->suiteDemandee ? juce::String ("en boucle") : "encore " + juce::String ((int) std::ceil (r->mesuresRestantes - 1.0e-6));
+        const auto ensuite = r->suivante.isNotEmpty() ? ", puis " + r->suivante : (r->ouverte && ! r->suiteDemandee ? juce::String() : juce::String (", fin"));
+        g.drawFittedText (reste + ensuite + (r->pistesReprises > 0 ? ", " + juce::String (r->pistesReprises) + " à la main"_fr : juce::String()),
+                          juce::Rectangle<int> (320, 4, (int) largeur - 320 - 160 - (moteur.priseEnCours() ? 140 : 0), 40), juce::Justification::centredLeft, 1, 0.6f);
+    }
+    else
+    {
+        g.setColour (texte);
+        g.setFont (juce::FontOptions (32.0f, juce::Font::bold));
+        g.drawText (formaterTempo (morceau.tempo), juce::Rectangle<float> (14.0f, 4.0f, 200.0f, 40.0f), juce::Justification::centredLeft);
 
-    g.setFont (juce::FontOptions (28.0f));
-    g.drawText (morceau.mesure.nom() + "  " + morceau.mesure.nomGroupement(), juce::Rectangle<float> (220.0f, 4.0f, 230.0f, 40.0f), juce::Justification::centredLeft);
+        g.setFont (juce::FontOptions (28.0f));
+        g.drawText (morceau.mesure.nom() + "  " + morceau.mesure.nomGroupement(), juce::Rectangle<float> (220.0f, 4.0f, 230.0f, 40.0f), juce::Justification::centredLeft);
+    }
 
     juce::String position;
 
@@ -1590,9 +1632,12 @@ void Pilote::dessinerEcran (juce::Image& image) const
     else
         position = "Mesure " + juce::String (p.mesure) + (moteur.priseEnCours() ? juce::String() : "   temps " + juce::String (p.temps + 1));   // pendant une prise, la place va à sa durée
 
-    g.setColour (p.enLecture ? actif : discret);
-    g.setFont (juce::FontOptions (28.0f, juce::Font::bold));
-    g.drawText (position, juce::Rectangle<float> (455.0f, 4.0f, 340.0f, 40.0f), juce::Justification::centredLeft);
+    if (! moteur.rejeuEnCours())
+    {
+        g.setColour (p.enLecture ? actif : discret);
+        g.setFont (juce::FontOptions (28.0f, juce::Font::bold));
+        g.drawText (position, juce::Rectangle<float> (455.0f, 4.0f, 340.0f, 40.0f), juce::Justification::centredLeft);
+    }
 
     const auto zoneClic = juce::Rectangle<float> (largeur - 150.0f, 9.0f, 136.0f, 30.0f);
     g.setColour (morceau.clic.actif ? premier : panneau);
@@ -1625,15 +1670,16 @@ void Pilote::dessinerEcran (juce::Image& image) const
         g.fillRect (0.0f, 49.0f, largeur * enchainement->avancee, 4.0f);
     }
 
-    // Annonce, par-dessus les colonnes
+    // Annonce : dans le bandeau du haut, à côté du tempo ; les colonnes restent toujours visibles
     if (juce::Time::getMillisecondCounterHiRes() < annonce.fin)
     {
+        const auto zone = juce::Rectangle<float> (220.0f, 4.0f, largeur - 220.0f - 160.0f - (moteur.priseEnCours() ? 140.0f : 0.0f), 42.0f);   // sans cacher le clic ni la prise
+        g.setColour (panneau);
+        g.fillRoundedRectangle (zone, 6.0f);
         g.setColour (texte);
-        g.setFont (juce::FontOptions (30.0f));
-        g.drawFittedText (annonce.titre, juce::Rectangle<int> (10, 56, (int) largeur - 20, 44), juce::Justification::centred, 1, 0.6f);
-        g.setFont (juce::FontOptions (44.0f, juce::Font::bold));
-        g.drawFittedText (annonce.valeur, juce::Rectangle<int> (10, 100, (int) largeur - 20, 56), juce::Justification::centred, 1, 0.5f);
-        return;
+        g.setFont (juce::FontOptions (26.0f, juce::Font::bold));
+        g.drawFittedText (annonce.titre + (annonce.valeur.isNotEmpty() ? " : " + annonce.valeur : juce::String()),
+                          zone.reduced (10.0f, 0.0f).toNearestInt(), juce::Justification::centred, 1, 0.5f);
     }
 
     // 8 colonnes alignées sur les encodeurs

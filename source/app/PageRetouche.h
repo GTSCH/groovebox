@@ -53,7 +53,9 @@ private:
     juce::TextButton boutonEcouter { "Écouter"_fr }, boutonCouper { "Couper au curseur" }, boutonSupprimer { "Supprimer" },
                      boutonAvant { "Vers le début"_fr }, boutonApres { "Vers la fin" }, boutonRepeter { "Répéter"_fr },
                      boutonRenommer { juce::String::fromUTF8 ("Renommer…") }, boutonLisser { "Lisser" }, boutonEffacer { "Effacer" },
-                     boutonAnnuler { "Annuler la retouche" }, boutonCreer { juce::String ("Créer le déroulé…"_fr) };
+                     boutonAnnuler { "Annuler la retouche" }, boutonCreer { juce::String ("Créer le déroulé…"_fr) },
+                     boutonOuverte { "Section ouverte : non" }, boutonRejouer { "Rejouer depuis la section" };
+    juce::ToggleButton choixPourPlay { "Play rejoue ce déroulé"_fr };
     juce::Rectangle<int> zoneDesSections, zoneDesLignes;
 
     juce::File dossierDesPrises() const;
@@ -69,6 +71,8 @@ private:
     void renommer();
     void creer();
     void changerEntree();
+    void rejouer();
+    void synchroniserPlay();
     Section* section();
     double versTemps (int x) const;
     float versX (double temps) const;

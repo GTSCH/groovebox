@@ -12,6 +12,7 @@ struct ActionsMorceaux
     std::function<void (const juce::String&)> ouvrir;
     std::function<void()> nouveau;
     std::function<void()> demo;
+    std::function<void()> demo2;
     std::function<void()> ouvrirSimulateur;
 };
 
@@ -31,7 +32,7 @@ private:
 
     juce::Label nomDuMorceau, infos;
     juce::TextButton boutonNouveau { "Nouveau" }, boutonOuvrir { juce::String::fromUTF8 ("Ouvrir…") },
-                     boutonRenommer { juce::String::fromUTF8 ("Renommer…") }, boutonDemo { juce::String::fromUTF8 ("Démo") },
+                     boutonRenommer { juce::String::fromUTF8 ("Renommer…") }, boutonDemo { juce::String::fromUTF8 ("Démo") }, boutonDemo2 { juce::String::fromUTF8 ("Démo 2") },
                      boutonSimulateur { "Simulateur du Push" };
     juce::Rectangle<int> zoneGrille;
 

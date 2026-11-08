@@ -17,6 +17,7 @@ PageSession::PageSession (Moteur& m, ActionsMorceaux a)  : moteur (m), actions (
 
     boutonNouveau.onClick = [this] { if (actions.nouveau) actions.nouveau(); };
     boutonDemo.onClick = [this] { if (actions.demo) actions.demo(); };
+    boutonDemo2.onClick = [this] { if (actions.demo2) actions.demo2(); };
     boutonRenommer.onClick = [this] { renommer(); };
     boutonSimulateur.onClick = [this] { if (actions.ouvrirSimulateur) actions.ouvrirSimulateur(); };
     boutonOuvrir.onClick = [this]
@@ -34,7 +35,7 @@ PageSession::PageSession (Moteur& m, ActionsMorceaux a)  : moteur (m), actions (
         });
     };
 
-    for (auto* b : { &boutonNouveau, &boutonOuvrir, &boutonRenommer, &boutonDemo, &boutonSimulateur })
+    for (auto* b : { &boutonNouveau, &boutonOuvrir, &boutonRenommer, &boutonDemo, &boutonDemo2, &boutonSimulateur })
     {
         b->setWantsKeyboardFocus (false);
         addAndMakeVisible (*b);
@@ -151,7 +152,7 @@ void PageSession::resized()
     boutonSimulateur.setBounds (haut.removeFromRight (180).reduced (0, 4));
     haut.removeFromRight (8);
 
-    for (auto* b : { &boutonDemo, &boutonRenommer, &boutonOuvrir, &boutonNouveau })
+    for (auto* b : { &boutonDemo2, &boutonDemo, &boutonRenommer, &boutonOuvrir, &boutonNouveau })
     {
         b->setBounds (haut.removeFromRight (100).reduced (0, 4));
         haut.removeFromRight (6);

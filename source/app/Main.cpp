@@ -161,6 +161,7 @@ private:
         actions.ouvrir = [this] (const juce::String& nom) { ouvrirMorceau (nom); };
         actions.nouveau = [this] { nouveauMorceau(); };
         actions.demo = [this] { ouvrirLaDemo(); };
+        actions.demo2 = [this] { ouvrirLaDemo2(); };
         actions.ouvrirSimulateur = [this] { ouvrirLeSimulateur(); };
 
         fenetre = std::make_unique<Fenetre> (*engine, *moteur, std::move (actions), [this] { return etatDuPush(); });
@@ -193,6 +194,7 @@ private:
 
     void charger (const Morceau& m)
     {
+        moteur->deroulePourPlay.reset();    // un autre morceau : Play redevient la lecture habituelle
         sauvegarder();
         moteur->chargerMorceau (m);
         dossierCourant = moteur->getMorceau().nom;
@@ -217,6 +219,30 @@ private:
     void ouvrirLaDemo()
     {
         charger (demo());
+    }
+
+    /** Démo 2 : le morceau en 6/8, et son déroulé d'un bout à l'autre, que Play rejoue tout de suite. */
+    void ouvrirLaDemo2()
+    {
+        const auto nom = "Démo 2"_fr;
+        auto m = bibliotheque->ouvrir (nom);
+
+        if (! m)
+        {
+            m = morceauDeDemonstration2();
+            bibliotheque->enregistrer (*m);
+        }
+
+        charger (*m);
+
+        const auto deroule = derouleDeLaDemo2 (morceauDeDemonstration2());
+        const auto fichier = bibliotheque->dossierDe (nom).getChildFile ("deroules").getChildFile (juce::File::createLegalFileName (deroule.nom) + ".json");
+
+        if (! fichier.existsAsFile())
+            deroule.enregistrer (fichier);
+
+        if (auto d = Deroule::charger (fichier))
+            moteur->deroulePourPlay = *d;
     }
 
     /** Le dossier suit le nom du morceau, même quand on annule un changement de nom. */
@@ -267,6 +293,10 @@ private:
 
     void sauvegarder()
     {
+        // Pendant un rejeu, le morceau change sans cesse puis revient : on attend la fin pour enregistrer
+        if (moteur->rejeuEnCours())
+            return;
+
         sauvegardeEnAttente = false;
 
         if (diagnosticEnCours)

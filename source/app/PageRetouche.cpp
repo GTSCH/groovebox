@@ -127,9 +127,15 @@ PageRetouche::PageRetouche (te::Engine& engine, Moteur& m)  : moteur (m), lecteu
         miseAJour();
     };
     boutonCreer.onClick = [this] { creer(); };
+    boutonOuverte.onClick = [this] { modifier ([this] (Deroule& d) { auto& s = d.sections[(size_t) sectionChoisie]; s.ouverte = ! s.ouverte; return true; }); };
+    boutonRejouer.onClick = [this] { rejouer(); };
+    choixPourPlay.setColour (juce::ToggleButton::textColourId, couleurTexte);
+    choixPourPlay.setWantsKeyboardFocus (false);
+    choixPourPlay.onClick = [this] { synchroniserPlay(); };
+    addAndMakeVisible (choixPourPlay);
 
     for (auto* b : { &boutonEcouter, &boutonCouper, &boutonSupprimer, &boutonAvant, &boutonApres, &boutonRepeter, &boutonRenommer,
-                     &boutonLisser, &boutonEffacer, &boutonAnnuler, &boutonCreer })
+                     &boutonLisser, &boutonEffacer, &boutonAnnuler, &boutonCreer, &boutonOuverte, &boutonRejouer })
     {
         b->setWantsKeyboardFocus (false);
         addAndMakeVisible (*b);
@@ -350,6 +356,13 @@ void PageRetouche::miseAJour()
                              && curseur < deroule->debutDeLaSection (sectionChoisie) + s->longueur - 1.0e-6);
     boutonAnnuler.setEnabled (! historique.empty());
     boutonCreer.setEnabled (deroule.has_value() && ! deroule->sections.empty());
+    boutonOuverte.setEnabled (aUneSection);
+    boutonOuverte.setButtonText (aUneSection && s->ouverte ? "Section ouverte : oui" : "Section ouverte : non");
+    boutonRejouer.setEnabled (deroule.has_value() && ! deroule->sections.empty());
+    choixPourPlay.setEnabled (deroule.has_value() && ! deroule->sections.empty());
+
+    if (choixPourPlay.getToggleState())
+        synchroniserPlay();
     boutonCreer.setButtonText (fichierDuDeroule == juce::File() ? juce::String ("Créer le déroulé…"_fr) : juce::String ("Enregistrer le déroulé"_fr));
     choixDeLEntree.setEnabled (aUneSection && s->scene >= 0);
 
@@ -418,6 +431,31 @@ void PageRetouche::changerEntree()
 
         return true;
     });
+}
+
+void PageRetouche::synchroniserPlay()
+{
+    // Coché : Play (Push ou barre d'espace) rejoue le déroulé tel qu'il est à l'écran, retouches comprises
+    if (choixPourPlay.getToggleState() && deroule && ! deroule->sections.empty())
+        moteur.deroulePourPlay = *deroule;
+    else
+        moteur.deroulePourPlay.reset();
+}
+
+void PageRetouche::rejouer()
+{
+    if (moteur.rejeuEnCours())
+    {
+        moteur.arreter();
+        return;
+    }
+
+    if (! deroule || deroule->sections.empty())
+        return;
+
+    lecteur.arreter();
+    ecouteEnCours = false;
+    moteur.rejouer (*deroule, juce::jmax (0, sectionChoisie));
 }
 
 void PageRetouche::ecouter()
@@ -622,7 +660,8 @@ void PageRetouche::paint (juce::Graphics& g)
         g.setFont (juce::FontOptions (17.0f, juce::Font::bold));
         g.drawFittedText (s.nom, bloc.reduced (6.0f, 4.0f).removeFromTop (24.0f).toNearestInt(), juce::Justification::centredLeft, 1, 0.6f);
         g.setFont (juce::FontOptions (14.0f));
-        g.drawFittedText (formaterMesures (s.mesures()) + (s.entree && s.entree->type != TypeEnchainement::coupe ? ", " + nomDeLEnchainement (s.entree->type).toLowerCase() : juce::String()),
+        g.drawFittedText (formaterMesures (s.mesures()) + (s.entree && s.entree->type != TypeEnchainement::coupe ? ", " + nomDeLEnchainement (s.entree->type).toLowerCase() : juce::String())
+                              + (s.ouverte ? juce::String (", ouverte") : juce::String()),
                           bloc.reduced (6.0f, 4.0f).withTrimmedTop (24.0f).removeFromTop (20.0f).toNearestInt(), juce::Justification::centredLeft, 1, 0.6f);
     }
 
@@ -683,7 +722,16 @@ void PageRetouche::paint (juce::Graphics& g)
         }
     }
 
-    // Le curseur de coupe, et la position d'écoute
+    // Pendant le rejeu : où en est le déroulé
+    if (const auto r = moteur.etatDuRejeu(); r && r->deroule == deroule->nom && r->numero - 1 < (int) deroule->sections.size())
+    {
+        const auto& s = deroule->sections[(size_t) r->numero - 1];
+        const double t = deroule->debutDeLaSection (r->numero - 1) + juce::jlimit (0.0, s.longueur, s.longueur - r->mesuresRestantes * s.tempsParMesure());
+        g.setColour (couleurActif);
+        g.fillRect (versX (t) - 1.0f, (float) zoneDesSections.getY() - 4.0f, 3.0f, (float) (zoneDesLignes.getBottom() - zoneDesSections.getY()) + 4.0f);
+    }
+
+    // Le curseur de coupe
     if (curseur >= 0.0)
     {
         g.setColour (couleurGroupe);
@@ -704,6 +752,13 @@ void PageRetouche::timerCallback()
     }
 
     boutonEcouter.setButtonText (lecteur.enCours() ? juce::String ("Arrêter l'écoute"_fr) : juce::String ("Écouter"_fr));
+    boutonRejouer.setButtonText (moteur.rejeuEnCours() ? juce::String ("Arrêter le rejeu"_fr) : juce::String ("Rejouer depuis la section"));
+
+    if (moteur.rejeuEnCours())
+        repaint (zoneDesSections.getUnion (zoneDesLignes).expanded (0, 6));
+
+    // La case suit ce que Play rejouera vraiment (un déroulé a pu être choisi ailleurs, par la Démo 2)
+    choixPourPlay.setToggleState (deroule && moteur.deroulePourPlay && moteur.deroulePourPlay->nom == deroule->nom, juce::dontSendNotification);
 }
 
 void PageRetouche::resized()
@@ -735,8 +790,11 @@ void PageRetouche::resized()
     boutonLisser.setBounds (ligneB.removeFromLeft (100).reduced (3, 2));
     boutonEffacer.setBounds (ligneB.removeFromLeft (100).reduced (3, 2));
 
-    boutonCreer.setBounds (ligneC.removeFromRight (240).reduced (3, 2));
-    boutonAnnuler.setBounds (ligneC.removeFromLeft (220).reduced (3, 2));
+    boutonAnnuler.setBounds (ligneC.removeFromLeft (165).reduced (3, 2));
+    boutonOuverte.setBounds (ligneC.removeFromLeft (175).reduced (3, 2));
+    boutonRejouer.setBounds (ligneC.removeFromLeft (215).reduced (3, 2));
+    choixPourPlay.setBounds (ligneC.removeFromLeft (200).reduced (8, 2));
+    boutonCreer.setBounds (ligneC.reduced (3, 2));
 
     zoneDesSections = zone.removeFromTop (70);
     zone.removeFromTop (8);

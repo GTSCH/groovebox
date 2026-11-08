@@ -259,6 +259,12 @@ void Moteur::modifier (const std::function<void (Morceau&)>& changement, const j
     if (appel.aNoter())
         noterReglages (ancien);
 
+    // Pendant le rejeu, une piste dont on tourne un réglage est reprise à la main
+    if (appel.exterieur && rejeu && ! rejeuAgit)
+        for (auto& c : ecarts::entre (ancien.versJson(), morceau.versJson()))
+            if (const int p = retouche::pisteDuChemin ((*c.getArray())[0].toString()); p >= 0)
+                reprendre (p);
+
     if (surChangementDeMorceau)
         surChangementDeMorceau();
 }
@@ -339,6 +345,12 @@ bool Moteur::annuler()
     if (appel.aNoter())
         noterReglages (ancien);
 
+    // Pendant le rejeu, une piste dont on tourne un réglage est reprise à la main
+    if (appel.exterieur && rejeu && ! rejeuAgit)
+        for (auto& c : ecarts::entre (ancien.versJson(), morceau.versJson()))
+            if (const int p = retouche::pisteDuChemin ((*c.getArray())[0].toString()); p >= 0)
+                reprendre (p);
+
     if (surChangementDeMorceau)
         surChangementDeMorceau();
 
@@ -365,6 +377,12 @@ bool Moteur::retablir()
 
     if (appel.aNoter())
         noterReglages (ancien);
+
+    // Pendant le rejeu, une piste dont on tourne un réglage est reprise à la main
+    if (appel.exterieur && rejeu && ! rejeuAgit)
+        for (auto& c : ecarts::entre (ancien.versJson(), morceau.versJson()))
+            if (const int p = retouche::pisteDuChemin ((*c.getArray())[0].toString()); p >= 0)
+                reprendre (p);
 
     if (surChangementDeMorceau)
         surChangementDeMorceau();
@@ -396,7 +414,7 @@ void Moteur::noterReglages (const Morceau& avant)
 {
     const auto changements = ecarts::entre (avant.versJson(), morceau.versJson());
 
-    if (changements.isEmpty())
+    if (changements.isEmpty() || ! prise)
         return;
 
     EvenementDePrise e;
@@ -494,6 +512,391 @@ std::optional<juce::File> Moteur::arreterPrise()
 double Moteur::dureeDeLaPrise() const
 {
     return prise ? (juce::Time::getMillisecondCounterHiRes() - instantDuDebutDeLaPrise) / 1000.0 : 0.0;
+}
+
+//==============================================================================
+bool Moteur::rejouer (const Deroule& d, int depuis)
+{
+    if (depuis < 0 || depuis >= (int) d.sections.size())
+        return false;
+
+    arreter();
+
+    Rejeu r;
+    r.deroule = d;
+    r.avant = morceau;
+    r.tailleDeLHistorique = historique.size();
+    r.section = depuis;
+    r.debut = tempsDeLaMesure1();
+    rejeu = std::move (r);
+
+    const auto& s = rejeu->deroule.sections[(size_t) depuis];
+    const juce::ScopedValueSetter<bool> agit (rejeuAgit, true);
+
+    // À l'arrêt : l'état de la section (mesure comprise), puis ce qui doit jouer sur chaque piste, à la mesure 1
+    appliquerEtat (s.etat);
+    rejeu->attendu = s.etat;
+    rejeu->scenesAttendues = s.scenesDeDepart;
+    bool lance = false;
+
+    for (int p = 0; p < nombreDePistes; ++p)
+        if (const int sc = s.scenesDeDepart[(size_t) p]; sc >= 0 && morceau.clip (p, sc) != nullptr)
+        {
+            lancerClip (p, sc);
+            lance = true;
+        }
+
+    if (! lance)
+        lancer();
+
+    juce::Logger::writeToLog ("Rejeu de « "_fr + d.nom + " », depuis la section " + juce::String (depuis + 1));
+    return true;
+}
+
+void Moteur::terminerLeRejeu()
+{
+    if (! rejeu)
+        return;
+
+    // Le morceau revient tel qu'il était : rien de ce que le rejeu a changé n'est gardé
+    const auto ancien = morceau;
+    morceau = rejeu->avant;
+
+    if (historique.size() > rejeu->tailleDeLHistorique)
+        historique.resize (rejeu->tailleDeLHistorique);
+
+    futur.clear();
+    rejeu.reset();
+    appliquerDifferences (ancien);
+
+    if (surChangementDeMorceau)
+        surChangementDeMorceau();
+}
+
+void Moteur::suivreLeRejeu()
+{
+    if (! rejeu || demarrageEnAttente || ! enLecture())
+        return;
+
+    auto& r = *rejeu;
+    const double maintenant = tempsActuel();
+    const auto& sections = r.deroule.sections;
+    const auto& s = sections[(size_t) r.section];
+
+    // Les gestes de la section, à leur temps
+    while (r.prochain < s.evenements.size() && r.debut + s.evenements[r.prochain].temps <= maintenant)
+        rejouerGeste (s.evenements[r.prochain++]);
+
+    if (! rejeu)
+        return;
+
+    // La suite : la section suivante, ou la même tant qu'une section ouverte attend qu'on passe à la suite
+    const bool boucle = s.ouverte && ! r.suiteDemandee;
+    const int suivante = boucle ? r.section : r.section + 1;
+    const double fin = s.ouverte && r.suiteDemandee ? r.finDemandee : r.debut + s.longueur;
+
+    if (suivante >= (int) sections.size())
+    {
+        if (maintenant >= fin)
+            arreter();      // fin du déroulé
+
+        return;
+    }
+
+    if (r.sectionOuverte < 0 && maintenant >= fin - sections[(size_t) suivante].avance - margeDuFilPrincipal())
+    {
+        lancerLaSection (suivante, fin);
+        r.sectionOuverte = suivante;
+        r.debutDeLaSuivante = fin;
+    }
+
+    if (r.sectionOuverte >= 0 && maintenant >= r.debutDeLaSuivante)
+        entrerDansLaSection (r.sectionOuverte, r.debutDeLaSuivante);
+}
+
+void Moteur::lancerLaSection (int i, double debut)
+{
+    auto& r = *rejeu;
+    const auto& s = r.deroule.sections[(size_t) i];
+
+    if (i == r.section)
+        return;     // section ouverte qui boucle : les scènes continuent
+
+    const juce::ScopedValueSetter<bool> agit (rejeuAgit, true);
+    const juce::ScopedValueSetter<std::optional<double>> cale (caleForcee, debut);
+
+    // Les clips de la section doivent être en place avant leur départ
+    appliquerEtat (s.etat, [] (const juce::String& c) { return c.startsWith ("/scenes"); });
+    auto prevues = r.scenesAttendues;
+
+    if (s.scene >= 0 && s.entree)
+    {
+        const bool personne = std::none_of (r.reprises.begin(), r.reprises.end(), [] (bool b) { return b; });
+
+        if (personne && s.aLaMain)
+            preparerScene (s.scene, *s.entree);
+        else if (personne)
+            lancerScene (s.scene, *s.entree);
+        else
+            for (int p = 0; p < nombreDePistes; ++p)
+                if (! r.reprises[(size_t) p] && morceau.clip (p, s.scene) != nullptr
+                     && pisteAChanger (p, s.scene, s.entree->coupeNette (morceau.pistes[(size_t) p].estUneBatterie())))
+                    lancerClip (p, s.scene, *s.entree);
+
+        for (int p = 0; p < nombreDePistes; ++p)
+            if (morceau.clip (p, s.scene) != nullptr)
+                prevues[(size_t) p] = s.scene;
+    }
+
+    // Ce qui doit jouer au début de la section (une suite déplacée, une section reprise ailleurs) : en coupe, à sa mesure
+    for (int p = 0; p < nombreDePistes; ++p)
+    {
+        const int vise = s.scenesDeDepart[(size_t) p];
+
+        if (r.reprises[(size_t) p] || vise == prevues[(size_t) p])
+            continue;
+
+        if (vise >= 0 && morceau.clip (p, vise) != nullptr)
+            lancerClip (p, vise, Enchainement {});
+        else
+            arreterPiste (p);
+    }
+
+    r.scenesAttendues = s.scenesDeDepart;
+}
+
+void Moteur::entrerDansLaSection (int i, double debut)
+{
+    auto& r = *rejeu;
+    r.section = i;
+    r.debut = debut;
+    r.prochain = 0;
+    r.sectionOuverte = -1;
+    r.suiteDemandee = false;
+    r.attendu = r.deroule.sections[(size_t) i].etat;
+    r.scenesAttendues = r.deroule.sections[(size_t) i].scenesDeDepart;
+
+    const juce::ScopedValueSetter<bool> agit (rejeuAgit, true);
+    appliquerEtat (r.attendu);
+}
+
+void Moteur::rejouerGeste (const EvenementDePrise& e)
+{
+    using G = EvenementDePrise::Genre;
+    auto& r = *rejeu;
+    const juce::ScopedValueSetter<bool> agit (rejeuAgit, true);
+    const bool reprise = e.piste >= 0 && e.piste < nombreDePistes && r.reprises[(size_t) e.piste];
+    const juce::ScopedValueSetter<std::optional<double>> cale (caleForcee, e.cale ? std::optional (r.debut + *e.cale) : std::nullopt);
+
+    switch (e.genre)
+    {
+        case G::reglages:
+            r.attendu = ecarts::appliquer (r.attendu, e.changements);
+            appliquerEtat (r.attendu);
+            break;
+
+        case G::scene:
+            if (e.piste >= 0)
+            {
+                r.scenesAttendues[(size_t) e.piste] = morceau.clip (e.piste, e.scene) != nullptr ? e.scene : -1;
+
+                if (! reprise)
+                    lancerClip (e.piste, e.scene, e.enchainement);
+            }
+            break;
+
+        case G::arret:
+            for (int p = 0; p < nombreDePistes; ++p)
+                if (e.piste < 0 || e.piste == p)
+                {
+                    r.scenesAttendues[(size_t) p] = -1;
+
+                    if (! r.reprises[(size_t) p])
+                        arreterPiste (p);
+                }
+            break;
+
+        case G::melange:
+            melangerALaMain (e.valeur);
+            break;
+
+        case G::filtreGlobal:
+            filtreGlobal (e.valeur);
+            break;
+
+        case G::envoiMomentane:
+            if (! reprise)
+                envoiMomentane (e.piste, e.valeur > 0.5f);
+            break;
+
+        case G::note:
+            if (! reprise)
+            {
+                if (e.velocite > 0)
+                    jouerNote (e.piste, (int) e.valeur, e.velocite);
+                else
+                    relacherNote (e.piste, (int) e.valeur);
+            }
+            break;
+
+        case G::preparation:
+            break;      // ouvre une section : déjà fait par lancerLaSection
+    }
+}
+
+bool Moteur::cheminRepris (const juce::String& chemin) const
+{
+    if (! rejeu)
+        return false;
+
+    if (const int p = retouche::pisteDuChemin (chemin); p >= 0 && p < nombreDePistes)
+        return rejeu->reprises[(size_t) p];
+
+    // /scenes/S/clips/P... : le clip d'une piste reprise
+    auto morceaux = juce::StringArray::fromTokens (chemin, "/", {});
+    morceaux.removeEmptyStrings();
+
+    if (morceaux.size() >= 4 && morceaux[0] == "scenes" && morceaux[2] == "clips")
+        if (const int p = morceaux[3].getIntValue(); p >= 0 && p < nombreDePistes)
+            return rejeu->reprises[(size_t) p];
+
+    return false;
+}
+
+void Moteur::appliquerEtat (const juce::var& vise, std::function<bool (const juce::String&)> garder)
+{
+    const auto actuel = morceau.versJson();
+    juce::Array<juce::var> retenus;
+
+    for (auto& c : ecarts::entre (actuel, vise))
+    {
+        const auto chemin = (*c.getArray())[0].toString();
+
+        // Le nom (et donc le dossier) du morceau ne bouge pas ; la mesure ne change pas en pleine lecture ; les pistes reprises non plus
+        if (chemin == "/nom" || ((chemin == "/mesure" || chemin.startsWith ("/mesure/")) && enLecture()) || cheminRepris (chemin))
+            continue;
+
+        if (garder && ! garder (chemin))
+            continue;
+
+        retenus.add (c);
+    }
+
+    if (retenus.isEmpty())
+        return;
+
+    auto nouveau = Morceau::depuisJson (ecarts::appliquer (actuel, retenus));
+    contraindre (nouveau);
+
+    if (enLecture())
+        nouveau.mesure = morceau.mesure;
+
+    const auto ancien = morceau;
+    morceau = nouveau;
+    appliquerDifferences (ancien);
+
+    if (surChangementDeMorceau)
+        surChangementDeMorceau();
+}
+
+void Moteur::reprendre (int piste)
+{
+    if (! rejeu)
+        return;
+
+    for (int p = 0; p < nombreDePistes; ++p)
+        if (piste < 0 || piste == p)
+            rejeu->reprises[(size_t) p] = true;
+}
+
+void Moteur::rendreLaMain (int piste)
+{
+    if (! rejeu)
+        return;
+
+    auto& r = *rejeu;
+    std::array<bool, nombreDePistes> rendues {};
+
+    for (int p = 0; p < nombreDePistes; ++p)
+        if ((piste < 0 || piste == p) && r.reprises[(size_t) p])
+        {
+            r.reprises[(size_t) p] = false;
+            rendues[(size_t) p] = true;
+        }
+
+    const juce::ScopedValueSetter<bool> agit (rejeuAgit, true);
+
+    // Ses réglages reviennent là où en est le déroulé, puis son clip, au prochain calage
+    appliquerEtat (r.attendu, [&rendues] (const juce::String& c)
+    {
+        const int p = retouche::pisteDuChemin (c);
+        return p >= 0 && rendues[(size_t) p];
+    });
+
+    for (int p = 0; p < nombreDePistes; ++p)
+    {
+        if (! rendues[(size_t) p])
+            continue;
+
+        const auto& t = enchainements[(size_t) p];
+        const int joue = t.enCours ? t.sceneVisee() : sceneSurLaVoix (p, voixCourantes[(size_t) p]);
+        const int vise = r.scenesAttendues[(size_t) p];
+
+        if (joue == vise)
+            continue;
+
+        if (vise >= 0 && morceau.clip (p, vise) != nullptr)
+            lancerClip (p, vise, Enchainement {});
+        else
+            arreterPiste (p);
+    }
+}
+
+void Moteur::passerALaSuite()
+{
+    if (! rejeu || ! enLecture())
+        return;
+
+    auto& r = *rejeu;
+    const auto& s = r.deroule.sections[(size_t) r.section];
+
+    if (! s.ouverte || r.suiteDemandee || r.sectionOuverte >= 0)
+        return;
+
+    // À la prochaine mesure de la section
+    const double parMesure = morceau.mesure.numerateur;
+    const double maintenant = tempsActuel() + margeDuFilPrincipal();
+    r.suiteDemandee = true;
+    r.finDemandee = r.debut + std::ceil ((maintenant - r.debut) / parMesure - 1.0e-9) * parMesure;
+}
+
+std::optional<Moteur::EtatDuRejeu> Moteur::etatDuRejeu() const
+{
+    if (! rejeu)
+        return std::nullopt;
+
+    const auto& r = *rejeu;
+    const auto& sections = r.deroule.sections;
+    const auto& s = sections[(size_t) r.section];
+    EtatDuRejeu e;
+    e.deroule = r.deroule.nom;
+    e.section = s.nom;
+    e.numero = r.section + 1;
+    e.nombre = (int) sections.size();
+    e.ouverte = s.ouverte;
+    e.suiteDemandee = r.suiteDemandee;
+
+    const int suivante = s.ouverte && ! r.suiteDemandee ? -1 : r.section + 1;
+    e.suivante = suivante >= 0 && suivante < (int) sections.size() ? sections[(size_t) suivante].nom : juce::String();
+
+    const double fin = s.ouverte && r.suiteDemandee ? r.finDemandee : r.debut + s.longueur;
+    const double maintenant = enLecture() && ! demarrageEnAttente ? tempsActuel() : r.debut;
+    e.mesuresRestantes = juce::jmax (0.0, fin - juce::jmax (r.debut, maintenant)) / juce::jmax (1, morceau.mesure.numerateur);
+
+    for (auto b : r.reprises)
+        e.pistesReprises += b ? 1 : 0;
+
+    return e;
 }
 
 //==============================================================================
@@ -819,6 +1222,9 @@ void Moteur::envoiMomentane (int piste, bool tenu)
     Appel appel (*this);
     piste = juce::jlimit (0, nombreDePistes - 1, piste);
 
+    if (appel.exterieur && rejeu && ! rejeuAgit)
+        reprendre (piste);
+
     if (appel.aNoter())
         noter ({ EvenementDePrise::Genre::envoiMomentane, 0.0, std::nullopt, piste, -1, std::nullopt, tenu ? 1.0f : 0.0f });
 
@@ -858,6 +1264,9 @@ std::vector<double> Moteur::debutsJoues (int piste, int scene) const
 void Moteur::jouerNote (int piste, int note, int velocite)
 {
     Appel appel (*this);
+
+    if (appel.exterieur && rejeu && ! rejeuAgit)
+        reprendre (juce::jlimit (0, nombreDePistes - 1, piste));
 
     if (appel.aNoter())
         noter ({ EvenementDePrise::Genre::note, 0.0, std::nullopt, piste, -1, std::nullopt, (float) note, juce::jlimit (1, 127, velocite) });
@@ -939,6 +1348,10 @@ std::optional<Moteur::Instant> Moteur::prochainCalage (std::optional<double> tem
     const auto mesure1 = tempsDeLaMesure1();
     double vise;
 
+    // Rejeu : le lancement part à la mesure où il était parti pendant la prise
+    if (! tempsVise && caleForcee)
+        tempsVise = caleForcee;
+
     if (tempsVise)
     {
         vise = *tempsVise;
@@ -1018,6 +1431,9 @@ void Moteur::lancerClip (int piste, int scene, std::optional<Enchainement> chois
 {
     Appel appel (*this);
 
+    if (appel.exterieur && rejeu && ! rejeuAgit)
+        reprendre (piste);
+
     if (appel.aNoter())
         noter ({ EvenementDePrise::Genre::scene, 0.0, caleDuLancement(), piste, scene, choisi.value_or (morceau.enchainement) });
 
@@ -1045,6 +1461,9 @@ void Moteur::lancerClip (int piste, int scene, std::optional<Enchainement> chois
 void Moteur::lancerScene (int scene, std::optional<Enchainement> choisi)
 {
     Appel appel (*this);
+
+    if (appel.exterieur && rejeu && ! rejeuAgit)
+        reprendre (-1);     // lancer une scène pendant le rejeu : on reprend tout
 
     if (scene < 0 || scene >= (int) morceau.scenes.size())
         return;
@@ -1103,6 +1522,9 @@ bool Moteur::pisteAChanger (int p, int scene, bool nette) const
 void Moteur::preparerScene (int scene, std::optional<Enchainement> choisi)
 {
     Appel appel (*this);
+
+    if (appel.exterieur && rejeu && ! rejeuAgit)
+        reprendre (-1);
 
     if (scene < 0 || scene >= (int) morceau.scenes.size())
         return;
@@ -1553,6 +1975,9 @@ void Moteur::arreterPiste (int piste)
 {
     Appel appel (*this);
 
+    if (appel.exterieur && rejeu && ! rejeuAgit)
+        reprendre (piste);
+
     if (appel.aNoter())
         noter ({ EvenementDePrise::Genre::arret, 0.0, caleDuLancement(), piste });
 
@@ -1573,6 +1998,9 @@ void Moteur::arreterPiste (int piste)
 void Moteur::arreterTousLesClips()
 {
     Appel appel (*this);
+
+    if (appel.exterieur && rejeu && ! rejeuAgit)
+        reprendre (-1);
 
     if (appel.aNoter())
         noter ({ EvenementDePrise::Genre::arret, 0.0, caleDuLancement(), -1 });
@@ -1633,11 +2061,12 @@ void Moteur::avancer()
         avancerLeDemarrage();
 
     suivreLesEnchainements();
+    suivreLeRejeu();
 
     if (demarrageEnAttente)
         return;
 
-    if (montee.active || std::any_of (enchainements.begin(), enchainements.end(), [] (auto& t) { return t.enCours; }))
+    if (rejeu || montee.active || std::any_of (enchainements.begin(), enchainements.end(), [] (auto& t) { return t.enCours; }))
     {
         if (getTimerInterval() != 10)
             startTimer (10);
@@ -1814,6 +2243,9 @@ void Moteur::arreter()
 
     edit->getTransport().stop (false, false);
     ramenerTempoAUnSeul();
+
+    if (rejeu)
+        terminerLeRejeu();
 }
 
 te::TimePosition Moteur::positionExacte() const

@@ -10,7 +10,7 @@ namespace groovebox
 namespace palette
 {
     constexpr int noir = 0;
-    constexpr int blancFaible = 16, blancMoyen = 48, blancFort = 127;      // LED blanches
+    constexpr int blancVeille = 12, blancFaible = 40, blancMoyen = 64, blancFort = 127;      // LED blanches : touche inutilisée, disponible, à moitié, active
     constexpr int grisFonce = 124, grisClair = 123, blanc = 122, bleu = 125, vert = 126, rouge = 127;
     constexpr int premiereCouleurDePiste = 64, intensites = 4;
 

@@ -8,7 +8,7 @@
 #include "EffetsMaison.h"
 #include "VoixPlugin.h"
 #include "EnregistreurAudio.h"
-#include "modele/Prise.h"
+#include "modele/Deroule.h"
 #include "modele/Morceau.h"
 
 namespace groovebox
@@ -168,6 +168,35 @@ public:
     std::function<void (const juce::File&)> surPriseTerminee;
     EnregistreurDEntree& getEntreeDesMicros()           { return entreeDesMicros; }
 
+    //==============================================================================
+    /** Rejeu d'un déroulé : chaque section s'ouvre à sa mesure (avec son enchaînement d'entrée, demandé avec la même
+        avance que pendant la prise), son état est remis et ses gestes rejoués. Une piste qu'on touche (clip, note, réglage,
+        envoi) est reprise à la main : le déroulé la laisse ; lancer une scène reprend tout. Rendre la main remet la piste là
+        où le déroulé en est. Une section ouverte tourne jusqu'à passerALaSuite. À la fin, ou à l'arrêt, le morceau revient
+        tel qu'il était avant le rejeu (rien de ce que le rejeu a changé n'est gardé). */
+    bool rejouer (const Deroule&, int depuisLaSection = 0);
+    bool rejeuEnCours() const                           { return rejeu.has_value(); }
+    void passerALaSuite();
+    void rendreLaMain (int piste);                      ///< -1 : toutes les pistes
+    bool pisteReprise (int piste) const                 { return rejeu && rejeu->reprises[(size_t) piste]; }
+
+    struct EtatDuRejeu
+    {
+        juce::String deroule, section, suivante;        ///< Suivante vide : la dernière
+        int numero = 0, nombre = 0;
+        double mesuresRestantes = 0.0;
+        bool ouverte = false, suiteDemandee = false;
+        int pistesReprises = 0;
+    };
+
+    std::optional<EtatDuRejeu> etatDuRejeu() const;
+
+    /** Le déroulé que Play rejoue (choisi dans l'onglet Retouche) ; vide : Play lance la Session comme d'habitude. */
+    std::optional<Deroule> deroulePourPlay;
+
+    /** Play : le déroulé choisi s'il y en a un, sinon la lecture habituelle. */
+    void lancerOuRejouer()                              { if (deroulePourPlay && ! deroulePourPlay->sections.empty()) rejouer (*deroulePourPlay); else lancer(); }
+
     /** Appelé (fil principal) après chaque modification du morceau. */
     std::function<void()> surChangementDeMorceau;
 
@@ -317,6 +346,37 @@ private:
     void noter (EvenementDePrise);
     void noterReglages (const Morceau& avant);
     double caleDuLancement() const;
+
+    // Rejeu en cours
+    struct Rejeu
+    {
+        Deroule deroule;
+        int section = 0;
+        double debut = 0.0;                 ///< Temps du moteur du début de la section en cours
+        size_t prochain = 0;                ///< Prochain geste à rejouer dans la section
+        int sectionOuverte = -1;            ///< Section suivante déjà lancée (son lancement part avant sa mesure)
+        double debutDeLaSuivante = 0.0;
+        bool suiteDemandee = false;
+        double finDemandee = 0.0;           ///< Section ouverte : mesure où l'on passe à la suite
+        std::array<bool, nombreDePistes> reprises {};
+        juce::var attendu;                  ///< Le morceau tel que le déroulé le voudrait maintenant
+        std::array<int, nombreDePistes> scenesAttendues;
+        Morceau avant;
+        size_t tailleDeLHistorique = 0;
+    };
+
+    std::optional<Rejeu> rejeu;
+    bool rejeuAgit = false;
+    std::optional<double> caleForcee;
+
+    void suivreLeRejeu();
+    void lancerLaSection (int section, double debut);
+    void entrerDansLaSection (int section, double debut);
+    void rejouerGeste (const EvenementDePrise&);
+    void appliquerEtat (const juce::var& vise, std::function<bool (const juce::String&)> garder = {});
+    bool cheminRepris (const juce::String&) const;
+    void reprendre (int piste);
+    void terminerLeRejeu();
 
     // Annulation
     std::vector<Morceau> historique, futur;
