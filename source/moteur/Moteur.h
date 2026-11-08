@@ -265,6 +265,7 @@ private:
         std::array<std::optional<TypeEffet>, 3> typesDesEffets;
         te::AuxSendPlugin* envoiDelay = nullptr;
         te::AuxSendPlugin* envoiReverb = nullptr;
+        te::VolumeAndPanPlugin* coupureSono = nullptr;              ///< Après les envois : coupe la sono, pas le casque (guide au casque seul)
         std::array<std::unique_ptr<PiloteDeSurge>, 2> pilotesSurge;
         te::AuxSendPlugin* envoiCasque = nullptr;
         te::VolumeAndPanPlugin* volume = nullptr;
@@ -430,6 +431,11 @@ private:
     BipPlugin* bip (Sortie) const;
     te::WaveOutputDevice* trouverSortie (int premierCanal) const;
     void appliquerRoutage();
+
+    /** Batterie guide au casque seul : sa piste se tait dans la sono et ne passe plus par le delay ni la réverbération.
+        Sans sorties 3-4, elle reste dans la sono. */
+    void appliquerGuides();
+    bool guideAuCasqueSeul (int piste) const;
     void appliquerTempo();
     void appliquerMesure();
     void appliquerMotifDuClic();

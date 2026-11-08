@@ -158,6 +158,7 @@ Moteur::Moteur (te::Engine& e, Morceau depart, BanqueDeSons* banqueFournie)  : e
         pm.envoiDelay->busNumber = 1;
         pm.envoiReverb = ajouterPlugin<te::AuxSendPlugin> (*pm.dossier, -1);
         pm.envoiReverb->busNumber = 2;
+        pm.coupureSono = ajouterPlugin<te::VolumeAndPanPlugin> (*pm.dossier, -1);
     }
 
     // Retours des effets de départ : ils vont à la sono et, par le bus 0, au casque du batteur
@@ -984,6 +985,8 @@ void Moteur::appliquerPistes (const Morceau& ancien, bool tout)
         pm.dossier->setMute (p.mute);
         pm.dossier->setSolo (p.solo);
     }
+
+    appliquerGuides();
 }
 
 double Moteur::secondesDeLaBoucle (int piste) const
@@ -2375,6 +2378,32 @@ te::WaveOutputDevice* Moteur::trouverSortie (int premierCanal) const
     return nullptr;
 }
 
+bool Moteur::guideAuCasqueSeul (int piste) const
+{
+    const auto& p = morceau.pistes[(size_t) piste];
+    return p.estUneGuide() && p.guideAuCasqueSeul && sortieCasqueDisponible();
+}
+
+void Moteur::appliquerGuides()
+{
+    for (int i = 0; i < nombreDePistes; ++i)
+    {
+        auto& pm = pistesMoteur[(size_t) i];
+
+        if (pm.coupureSono == nullptr)
+            continue;
+
+        const bool casqueSeul = guideAuCasqueSeul (i);
+        pm.coupureSono->setVolumeDb (casqueSeul ? -100.0f : 0.0f);
+
+        if (casqueSeul)
+        {
+            pm.envoiDelay->setGainDb (-100.0f);
+            pm.envoiReverb->setGainDb (-100.0f);
+        }
+    }
+}
+
 bool Moteur::sortieCasqueDisponible() const
 {
     return trouverSortie (2) != nullptr;
@@ -2417,6 +2446,8 @@ void Moteur::appliquerRoutage()
         pisteCasque->setMute (true);
         bipCasque->actif = false;
     }
+
+    appliquerGuides();
 }
 
 void Moteur::changeListenerCallback (juce::ChangeBroadcaster*)

@@ -94,6 +94,56 @@ namespace kitsDeDepart
         k.pads[46 - Kit::premiereNote].etouffement = 1;
         return k;
     }
+
+    juce::String nomDuPad (const Kit& kit, int pad)
+    {
+        const auto& son = kit.pads[(size_t) juce::jlimit (0, Kit::nombreDePads - 1, pad)].son;
+
+        if (son.startsWith (kitsAcoustiques::dossier + "/"))
+            return son.fromLastOccurrenceOf ("/", false, false);
+
+        return nomsDesPads()[(size_t) juce::jlimit (0, Kit::nombreDePads - 1, pad)];
+    }
+}
+
+namespace kitsAcoustiques
+{
+    juce::StringArray noms()
+    {
+        return { "Black Pearl", "Blonde Bop", "Blonde Bop fagots", "Red Zeppelin", "Cajón"_fr };
+    }
+
+    const std::array<juce::String, Kit::nombreDePads>& instruments (const juce::String& kit)
+    {
+        // Mêmes rôles que les pads des kits de départ : grosse caisse en 36, caisse claire en 38, charlestons en 42, 44 et 46,
+        // toms en 41, 43 et 45, crash en 49, cloche de ride en 50, ride en 51
+        static const std::array<juce::String, Kit::nombreDePads> batterie {
+            "Grosse caisse", "Coup de cercle", "Caisse claire", "Clap", "Bord de caisse claire", "Tom basse", "Charleston fermé"_fr,
+            "Bord de tom basse", "Pied de charleston", "Tom", "Charleston ouvert", "Bord de tom", "Cloche", "Crash", "Cloche de ride", "Ride" };
+        static const std::array<juce::String, Kit::nombreDePads> cajon {
+            "Cajón grave"_fr, "Claquement de doigts", "Cajón claqué"_fr, "Claps", "Cajón claqué droite"_fr, "Conga grave", "Shaker",
+            "Conga grave droite", "Tambourin secoué"_fr, "Conga aiguë"_fr, "Tambourin frappé"_fr, "Conga aiguë droite"_fr, "Claves",
+            "Cymbale", "Cloche de cymbale", "Cloche" };
+        return kit.startsWith ("Caj") ? cajon : batterie;
+    }
+
+    Kit kit (const juce::String& nom)
+    {
+        Kit k;
+        k.nom = nom;
+        k.compression = 0.15f;
+        k.largeur = 0.6f;
+
+        for (int i = 0; i < Kit::nombreDePads; ++i)
+            k.pads[(size_t) i].son = dossier + "/" + nom + "/" + instruments (nom)[(size_t) i];
+
+        // Les trois charlestons se coupent entre eux, comme sur une vraie batterie
+        if (! nom.startsWith ("Caj"))
+            for (int note : { 42, 44, 46 })
+                k.pads[(size_t) (note - Kit::premiereNote)].etouffement = 1;
+
+        return k;
+    }
 }
 
 } // namespace groovebox

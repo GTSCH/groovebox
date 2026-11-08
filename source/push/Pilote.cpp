@@ -142,11 +142,20 @@ Pilote::Pilote (Moteur& m, Surface& s)  : moteur (m), surface (s)
                            static constexpr int choix[] = { 0, 2, 4, 8 };
                            int i = 0; while (i < 3 && choix[i] != g.roulement) ++i;
                            g.roulement = choix[juce::jlimit (0, 3, i + c)]; }); }, actif };
-    pageEuclide[7] = { "Moteur", [gen] { return nomDuMoteur (gen().moteur); }, [gen] { return (float) gen().moteur / 2.0f; },
+    pageEuclide[7] = { "Moteur", [gen] { return nomDuMoteur (gen().moteur); }, [gen] { return (float) gen().moteur / (float) (nombreDeMoteursRythmiques - 1); },
                        [this] (int pas, bool) { if (auto c = crantsDiscrets (7, pas)) modifierGenerateur (7, [=, m = moteur.getMorceau().mesure] (Generateur& g) {
-                           auto suivant = (MoteurRythmique) juce::jlimit (0, 2, (int) g.moteur + c);
+                           auto suivant = (MoteurRythmique) juce::jlimit (0, nombreDeMoteursRythmiques - 1, (int) g.moteur + c);
                            if (suivant == MoteurRythmique::grooves && ! generateurs::carteDeGroovesDisponible (m))
                                suivant = c > 0 ? MoteurRythmique::maison : MoteurRythmique::euclidien;
+
+                           // En arrivant sur le batteur : son style de départ et son humanisation
+                           if (suivant == MoteurRythmique::batteur && g.moteur != MoteurRythmique::batteur)
+                           {
+                               const auto depart = Generateur::parDefaut (MoteurRythmique::batteur, m);
+                               g.style = depart.style;
+                               g.humanisation = juce::jmax (g.humanisation, depart.humanisation);
+                           }
+
                            g.moteur = suivant; }); }, premier };
 
     // Page Générateur, cartes (grooves en 4/4, maison ailleurs)
@@ -165,6 +174,33 @@ Pilote::Pilote (Moteur& m, Surface& s)  : moteur (m), surface (s)
     pageCartes[6] = pageEuclide[5];
     pageCartes[7] = pageEuclide[7];
 
+    // Page Générateur, moteur batteur (batterie guide) : le groove, et l'espace laissé au vrai batteur
+    pageBatteur[0] = { "Style", [this, gen] { return nomDuStyleDeBatteur (generateurs::styleJoue (gen().style, moteur.getMorceau().mesure)); },
+                       [this, gen] { const auto styles = generateurs::stylesPourLaMesure (moteur.getMorceau().mesure);
+                                     const auto i = std::find (styles.begin(), styles.end(), generateurs::styleJoue (gen().style, moteur.getMorceau().mesure)) - styles.begin();
+                                     return styles.size() > 1 ? (float) i / (float) (styles.size() - 1) : 0.0f; },
+                       [this] (int pas, bool) { if (auto c = crantsDiscrets (0, pas)) modifierGenerateur (0, [=, m = moteur.getMorceau().mesure] (Generateur& g) {
+                           const auto styles = generateurs::stylesPourLaMesure (m);
+                           const auto i = (int) (std::find (styles.begin(), styles.end(), generateurs::styleJoue (g.style, m)) - styles.begin());
+                           g.style = styles[(size_t) juce::jlimit (0, (int) styles.size() - 1, i + c)]; }); }, premier };
+    pageBatteur[1] = { "Espace", [gen, pourcent] { return pourcent (gen().espace); }, [gen] { return gen().espace; },
+                       [this] (int pas, bool fin) { modifierGenerateur (1, [=] (Generateur& g) { g.espace = juce::jlimit (0.0f, 1.0f, g.espace + (float) pas * (fin ? 0.002f : 0.01f)); }); }, actif };
+    pageBatteur[2] = { "Fantômes"_fr, [gen, pourcent] { return pourcent (gen().fantomes); }, [gen] { return gen().fantomes; },
+                       [this] (int pas, bool fin) { modifierGenerateur (2, [=] (Generateur& g) { g.fantomes = juce::jlimit (0.0f, 1.0f, g.fantomes + (float) pas * (fin ? 0.002f : 0.01f)); }); }, actif };
+    pageBatteur[3] = { "Cymbale", [gen] { return nomDeLaCymbale (gen().cymbale); }, [gen] { return (float) gen().cymbale / (float) (nombreDeCymbalesDeBatteur - 1); },
+                       [this] (int pas, bool) { if (auto c = crantsDiscrets (3, pas)) modifierGenerateur (3, [=] (Generateur& g) {
+                           g.cymbale = (CymbaleDeBatteur) juce::jlimit (0, nombreDeCymbalesDeBatteur - 1, (int) g.cymbale + c); }); }, actif };
+    pageBatteur[4] = { "Crash", [gen] { return gen().crash == 0 ? juce::String ("Aucun") : "Toutes les " + juce::String (gen().crash); },
+                       [gen] { return (float) gen().crash / 16.0f; },
+                       [this] (int pas, bool) { if (auto c = crantsDiscrets (4, pas)) modifierGenerateur (4, [=] (Generateur& g) {
+                           static constexpr int choix[] = { 0, 2, 4, 8, 16 };
+                           int i = 0; while (i < 4 && choix[i] != g.crash) ++i;
+                           g.crash = choix[juce::jlimit (0, 4, i + c)]; }); }, actif };
+    pageBatteur[5] = pageEuclide[5];
+    pageBatteur[6] = pageEuclide[6];
+    pageBatteur[6].nom = "Roulement toms";
+    pageBatteur[7] = pageEuclide[7];
+
     // Page Commun : swing de la piste, roulement, graine, longueur du clip
     pageCommun[0] = { "Swing piste", [this] { const auto& p = moteur.getMorceau().pistes[(size_t) pisteChoisie];
                                               return p.swing ? juce::String (juce::roundToInt (*p.swing * 100.0f)) + " %" : juce::String ("Global"); },
@@ -181,6 +217,16 @@ Pilote::Pilote (Moteur& m, Surface& s)  : moteur (m), surface (s)
                           const auto& l = Clip::longueursPossibles;
                           int i = 0; while (i < 4 && l[(size_t) i] != clip.longueurMesures) ++i;
                           clip.longueurMesures = l[(size_t) juce::jlimit (0, 4, i + c)]; }); }, actif };
+
+    pageCommun[5] = { "Guide", [this] { const auto& p = moteur.getMorceau().pistes[(size_t) pisteChoisie];
+                                        return ! p.guide ? juce::String ("Non") : p.guideAuCasqueSeul ? juce::String ("Casque seul") : juce::String ("Sono et casque"); },
+                      [this] { const auto& p = moteur.getMorceau().pistes[(size_t) pisteChoisie]; return ! p.guide ? 0.0f : p.guideAuCasqueSeul ? 1.0f : 0.5f; },
+                      [this] (int pas, bool) { if (auto c = crantsDiscrets (5, pas)) if (pisteChoisieEstUneBatterie())
+                          moteur.modifier ([=, p = pisteChoisie] (Morceau& m) {
+                              auto& piste = m.pistes[(size_t) p];
+                              const int etat = juce::jlimit (0, 2, (! piste.guide ? 0 : piste.guideAuCasqueSeul ? 2 : 1) + c);
+                              piste.guide = etat > 0;
+                              piste.guideAuCasqueSeul = etat == 2; }, "encodeur commun 5"); }, actif };
 
     // Page Mélodie d'une piste de synthé : le générateur de basses et de mélodies
     auto mel = [this] () -> GenerateurMelodique { const auto* g = melodieVisee(); return g != nullptr ? *g : GenerateurMelodique::parDefaut (StyleMelodique::basseDub); };
@@ -526,18 +572,19 @@ void Pilote::modifierGenerateur (int encodeur, std::function<void (Generateur&)>
 {
     const bool devientGenere = generateurVise() == nullptr;
 
-    modifierClipVise (encodeur, [=, m = moteur.getMorceau().mesure] (Clip& c)
+    modifierClipVise (encodeur, [=, m = moteur.getMorceau().mesure, guide = pisteChoisieEstUneGuide()] (Clip& c)
     {
         // Un clip écrit à la main devient généré (Undo pour revenir)
         if (! c.generateur)
         {
-            // Départ sur une carte : X, Y et une densité suffisent pour un rythme jouable
-            c.generateur = Generateur::parDefaut (generateurs::carteDeGroovesDisponible (m) ? MoteurRythmique::grooves : MoteurRythmique::maison, m);
+            // Départ sur une carte : X, Y et une densité suffisent pour un rythme jouable ; la guide part sur le batteur
+            c.generateur = Generateur::parDefaut (guide ? MoteurRythmique::batteur
+                                                        : generateurs::carteDeGroovesDisponible (m) ? MoteurRythmique::grooves : MoteurRythmique::maison, m);
             c.nom = "Généré"_fr;
         }
 
         f (*c.generateur);
-        c.nom = nomDuMoteur (c.generateur->moteur);
+        c.nom = c.generateur->nomDuClip();
     });
 
     if (devientGenere)
@@ -600,6 +647,60 @@ bool Pilote::pisteChoisieEstUneBatterie() const
     return moteur.getMorceau().pistes[(size_t) pisteChoisie].estUneBatterie();
 }
 
+bool Pilote::pisteChoisieEstUneGuide() const
+{
+    return moteur.getMorceau().pistes[(size_t) pisteChoisie].estUneGuide();
+}
+
+void Pilote::basculerLaGuide()
+{
+    const auto& pistes = moteur.getMorceau().pistes;
+    const bool uneGuide = std::any_of (pistes.begin(), pistes.end(), [] (const Piste& p) { return p.estUneGuide(); });
+
+    if (! uneGuide)
+    {
+        annoncer ("Guide", "Pas de batterie guide : Browse, Machine, Batterie guide"_fr);
+        return;
+    }
+
+    // Une guide qui sonne : on les coupe toutes ; sinon on les rétablit toutes
+    const bool couper = std::any_of (pistes.begin(), pistes.end(), [] (const Piste& p) { return p.estUneGuide() && ! p.mute; });
+
+    moteur.modifier ([couper] (Morceau& m)
+    {
+        for (auto& p : m.pistes)
+            if (p.estUneGuide())
+                p.mute = couper;
+    }, "guide");
+
+    annoncer ("Guide", couper ? "Coupée"_fr : "Rétablie"_fr);
+}
+
+void Pilote::preparerClipDeGuide()
+{
+    if (! pisteChoisieEstUneGuide())
+        return;
+
+    auto cible = caseDuPasAPas();
+    const int scene = cible ? cible->second : (caseChoisie && caseChoisie->first == pisteChoisie ? caseChoisie->second : 0);
+
+    if (moteur.getMorceau().clip (pisteChoisie, scene) != nullptr)
+        return;
+
+    moteur.modifier ([=, p = pisteChoisie] (Morceau& m)
+    {
+        m.assurerScenes (scene + 1);
+        Clip c;
+        c.longueurMesures = 4;
+        c.generateur = Generateur::parDefaut (MoteurRythmique::batteur, m.mesure);
+        c.nom = c.generateur->nomDuClip();
+        c.regenerer (m.mesure, m.gamme);
+        m.scenes[(size_t) scene].clips[(size_t) p] = c;
+    }, "clip de guide");
+
+    caseChoisie = std::pair { pisteChoisie, scene };
+}
+
 bool Pilote::pisteChoisieEstUnSampler() const
 {
     return moteur.getMorceau().pistes[(size_t) pisteChoisie].estUnSampler();
@@ -652,18 +753,30 @@ void Pilote::preparerClipDeBoucle()
 
 void Pilote::changerDeMachine (const juce::String& machine)
 {
+    const bool acoustique = moteur.getBanque().getRacine().getChildFile (kitsAcoustiques::dossier).getChildFile (kitsAcoustiques::kitDeLaGuide).isDirectory();
+
     moteur.modifier ([=, p = pisteChoisie] (Morceau& m)
     {
         auto& piste = m.pistes[(size_t) p];
         const auto ancienNom = nomDuSon (piste.son);
         const auto depart = Morceau::pistesDeDepart()[(size_t) p].son;
 
+        const bool etaitGuide = piste.estUneGuide();
+        piste.guide = false;
+
         if (machine == "Batterie")
         {
             piste.son = SonProvisoire::batterie;
 
-            if (piste.kit.nom.isEmpty())
+            if (piste.kit.nom.isEmpty() || etaitGuide)
                 piste.kit = kitsDeDepart::kit ("Analogique");
+        }
+        else if (machine == "Batterie guide")
+        {
+            // Un kit acoustique s'il est installé, sinon le kit analogique
+            piste.son = SonProvisoire::batterie;
+            piste.guide = true;
+            piste.kit = acoustique ? kitsAcoustiques::kit (kitsAcoustiques::kitDeLaGuide) : kitsDeDepart::kit ("Analogique");
         }
         else if (machine == "Sampler")
         {
@@ -680,9 +793,11 @@ void Pilote::changerDeMachine (const juce::String& machine)
         }
 
         // Une piste qui portait le nom de sa machine prend celui de la nouvelle
-        if (piste.nom == ancienNom)
-            piste.nom = nomDuSon (piste.son);
+        if (piste.nom == ancienNom || piste.nom == "Guide")
+            piste.nom = piste.guide ? juce::String ("Guide") : nomDuSon (piste.son);
     }, "machine");
+
+    preparerClipDeGuide();
 }
 
 void Pilote::ouvrirLeNavigateur()
@@ -780,13 +895,23 @@ juce::StringArray Pilote::sonsDeLaCategorie() const
     const auto categorie = categoriesDuNavigateur[categorieChoisie];
 
     if (categorie == "Machine")
-        return { "Batterie", "Synthé"_fr, "Sampler" };
+        return { "Batterie", "Batterie guide", "Synthé"_fr, "Sampler" };
 
     if (pisteChoisieEstUnSynthe())
         return sonsDeSynthe::sonsDuStyle (categorie);
 
     if (categorie == "Kits")
-        return kitsDeDepart::noms();
+    {
+        // Les kits de départ, puis les kits acoustiques installés
+        auto noms = kitsDeDepart::noms();
+        const auto dossier = moteur.getBanque().getRacine().getChildFile (kitsAcoustiques::dossier);
+
+        for (auto& k : kitsAcoustiques::noms())
+            if (dossier.getChildFile (k).isDirectory())
+                noms.add (k);
+
+        return noms;
+    }
 
     return moteur.getBanque().sons (categorie);
 }
@@ -876,7 +1001,10 @@ void Pilote::choisirDansLeNavigateur()
     const auto choix = sons[sonChoisi];
 
     if (categoriesDuNavigateur[categorieChoisie] == "Kits")
-        moteur.modifier ([=, p = pisteChoisie] (Morceau& m) { m.pistes[(size_t) p].kit = kitsDeDepart::kit (choix); }, "navigateur");
+        moteur.modifier ([=, p = pisteChoisie] (Morceau& m)
+        {
+            m.pistes[(size_t) p].kit = kitsAcoustiques::noms().contains (choix) ? kitsAcoustiques::kit (choix) : kitsDeDepart::kit (choix);
+        }, "navigateur");
     else
         moteur.modifier ([=, p = pisteChoisie, k = padChoisi] (Morceau& m) { m.pistes[(size_t) p].kit.pads[(size_t) k].son = choix; }, "navigateur");
 
@@ -971,7 +1099,7 @@ void Pilote::appuyerPadDeNote (int ligne, int colonne, int velocite)
         if (nouveau && pisteChoisieEstUnSampler())
             annoncer ("Tranche " + juce::String (pad + 1), juce::File (moteur.getMorceau().pistes[(size_t) pisteChoisie].sampler.son).getFileNameWithoutExtension());
         else if (nouveau)
-            annoncer (kitsDeDepart::nomsDesPads()[(size_t) pad], juce::File (moteur.getMorceau().pistes[(size_t) pisteChoisie].kit.pads[(size_t) pad].son).getFileNameWithoutExtension());
+            annoncer (kitsDeDepart::nomDuPad (moteur.getMorceau().pistes[(size_t) pisteChoisie].kit, pad), juce::File (moteur.getMorceau().pistes[(size_t) pisteChoisie].kit.pads[(size_t) pad].son).getFileNameWithoutExtension());
 
         return;
     }
@@ -1528,7 +1656,7 @@ void Pilote::appuyer (int bouton)
                 return;
             }
 
-            annoncer ("Device", page == Page::device ? kitsDeDepart::nomsDesPads()[(size_t) padChoisi] + ", kit " + morceau.pistes[(size_t) pisteChoisie].kit.nom
+            annoncer ("Device", page == Page::device ? kitsDeDepart::nomDuPad (morceau.pistes[(size_t) pisteChoisie].kit, padChoisi) + ", kit " + morceau.pistes[(size_t) pisteChoisie].kit.nom
                               : page == Page::generateur ? "Générateur "_fr + (generateurVise() ? nomDuMoteur (generateurVise()->moteur) : juce::String ("(le clip deviendra généré)"_fr))
                                                          : juce::String ("Swing, humanisation, roulement, graine, longueur"));
             return;
@@ -1630,6 +1758,10 @@ void Pilote::appuyer (int bouton)
             {
                 annoncer ("Record", "Prise impossible : voir le journal"_fr);
             }
+            return;
+
+        case Bouton::layout:
+            basculerLaGuide();
             return;
 
         case Bouton::user:
@@ -1782,7 +1914,15 @@ EtatSurface Pilote::calculerEtat() const
     auto couleur = [&etat] (Bouton b, bool fort) { etat.boutons[(size_t) b] = fort ? palette::blanc : palette::grisClair; };
 
     // Toutes les touches restent lisibles : celles qui ne servent pas encore à peine éclairées, les autres en blanc faible
-    for (auto b : { Bouton::layout, Bouton::master, Bouton::addTrack, Bouton::repeat, Bouton::fixedLength, Bouton::gauche, Bouton::droite })
+    // Layout : la batterie guide, forte quand elle sonne, faible quand elle est coupée
+    {
+        const auto& pistes = morceau.pistes;
+        const bool uneGuide = std::any_of (pistes.begin(), pistes.end(), [] (const Piste& x) { return x.estUneGuide(); });
+        const bool sonne = std::any_of (pistes.begin(), pistes.end(), [] (const Piste& x) { return x.estUneGuide() && ! x.mute; });
+        etat.boutons[(size_t) Bouton::layout] = ! uneGuide ? palette::blancVeille : sonne ? palette::blancFort : palette::blancFaible;
+    }
+
+    for (auto b : { Bouton::master, Bouton::addTrack, Bouton::repeat, Bouton::fixedLength, Bouton::gauche, Bouton::droite })
         etat.boutons[(size_t) b] = palette::blancVeille;
 
     for (auto b : { Bouton::pageGauche, Bouton::pageDroite, Bouton::octaveHaut, Bouton::octaveBas, Bouton::haut, Bouton::bas,

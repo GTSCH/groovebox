@@ -46,6 +46,23 @@ namespace kitsDeDepart
 
     juce::StringArray noms();               ///< Analogique, Minimal, Dub, Hard techno
     Kit kit (const juce::String& nom);
+
+    /** Nom à afficher pour un pad : l'instrument d'un kit acoustique, sinon le nom du pad. */
+    juce::String nomDuPad (const Kit&, int pad);
+}
+
+/** Les kits acoustiques (AVL Drumkits, licence CC BY-SA 3.0), installés dans Sons/Batterie acoustique par
+    scripts/installer-batterie-acoustique.sh. Chaque instrument est un dossier de 1 à 5 niveaux de frappe (1.wav, le plus doux). */
+namespace kitsAcoustiques
+{
+    inline const juce::String dossier { "Batterie acoustique" };
+
+    juce::StringArray noms();               ///< Black Pearl, Blonde Bop, Blonde Bop fagots, Red Zeppelin, Cajón
+    const std::array<juce::String, Kit::nombreDePads>& instruments (const juce::String& kit);
+    Kit kit (const juce::String& nom);
+
+    /** Kit utilisé par la batterie guide quand il est installé. */
+    inline const juce::String kitDeLaGuide { "Black Pearl" };
 }
 
 } // namespace groovebox

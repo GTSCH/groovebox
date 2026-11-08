@@ -37,7 +37,16 @@ void BatteriePlugin::appliquerKit (const Kit& kit, BanqueDeSons& banque)
     {
         const auto& p = kit.pads[(size_t) i];
         auto& r = reglages[(size_t) i];
-        r.son = banque.charger (p.son);
+        const auto niveaux = banque.chargerNiveaux (p.son);
+        const int nombre = juce::jmin (niveauxMax, (int) niveaux.size());
+
+        // Le fil audio lit au plus « nombreDeNiveaux » sons, tous valides pendant toute la vie de la banque
+        r.nombreDeNiveaux = juce::jmin (r.nombreDeNiveaux.load(), nombre);
+
+        for (int k = 0; k < nombre; ++k)
+            r.niveaux[(size_t) k] = niveaux[(size_t) k];
+
+        r.nombreDeNiveaux = nombre;
         r.vitesse = std::pow (2.0f, p.hauteur / 12.0f);
 
         // Décroissance 1 : le son entier ; en dessous, de 2 s à 30 ms, sur une échelle logarithmique
@@ -53,7 +62,24 @@ void BatteriePlugin::appliquerKit (const Kit& kit, BanqueDeSons& banque)
 void BatteriePlugin::frapper (int pad, float velocite)
 {
     auto& r = reglages[(size_t) pad];
-    const auto* son = r.son.load();
+    const int nombre = r.nombreDeNiveaux.load();
+
+    if (nombre <= 0)
+        return;
+
+    // Plusieurs niveaux : la vélocité choisit l'enregistrement, à un demi-niveau près au hasard ; le gain suit moins fort
+    int niveau = 0;
+    float gain = std::pow (velocite, 1.4f);
+
+    if (nombre > 1)
+    {
+        hasardDesNiveaux = hasardDesNiveaux * 1664525u + 1013904223u;
+        const float ecart = ((float) (hasardDesNiveaux >> 8) / (float) (1u << 24) - 0.5f) * 0.9f;
+        niveau = juce::jlimit (0, nombre - 1, (int) std::floor (velocite * (float) nombre + ecart));
+        gain = 0.45f + 0.55f * velocite;
+    }
+
+    const auto* son = r.niveaux[(size_t) niveau].load();
 
     if (son == nullptr)
         return;
@@ -82,7 +108,7 @@ void BatteriePlugin::frapper (int pad, float velocite)
     v.active = true;
     v.son = son;
     v.pas = r.vitesse.load() * son->frequence / frequenceEchantillonnage;
-    v.gain = std::pow (velocite, 1.4f) * r.gain.load();
+    v.gain = gain * r.gain.load();
     v.dureeDeVie = r.dureeDeVie.load();
 }
 

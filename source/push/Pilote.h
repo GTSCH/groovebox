@@ -87,7 +87,8 @@ private:
     std::array<bool, nombreEncodeurs> touches {};
     std::array<int, nombreEncodeurs> crans {};
     std::array<Reglage, 8> pageClic, pageMix, pageDevice, pageBrowse, pageEuclide, pageCartes, pageCommun, pageVariation, pageGamme, pageMacros, pageMelodie, pageCommunSynthe,
-                           pageEnvoisDelay, pageEnvoisReverb, pageDeparts, pageEffet, pageAjout, pageEnchainement, pageSampler, pageCommunSampler;
+                           pageEnvoisDelay, pageEnvoisReverb, pageDeparts, pageEffet, pageAjout, pageEnchainement, pageSampler, pageCommunSampler,
+                           pageBatteur;
     int emplacementEffet = 0, typeAAjouter = 0, emplacementAAjouter = 0;
     int voixEuclidienne = 0;
     bool varierEnDupliquant = false;
@@ -120,8 +121,10 @@ private:
             case Page::communSampler: return pageCommunSampler;
             case Page::generateur:
             {
+                // Sans générateur, une batterie guide part sur le moteur batteur
                 const auto* g = generateurVise();
-                return g != nullptr && g->moteur != MoteurRythmique::euclidien ? pageCartes : pageEuclide;
+                const auto m = g != nullptr ? g->moteur : (pisteChoisieEstUneGuide() ? MoteurRythmique::batteur : MoteurRythmique::euclidien);
+                return m == MoteurRythmique::batteur ? pageBatteur : m != MoteurRythmique::euclidien ? pageCartes : pageEuclide;
             }
         }
 
@@ -129,6 +132,13 @@ private:
     }
 
     bool pisteChoisieEstUneBatterie() const;
+    bool pisteChoisieEstUneGuide() const;
+
+    /** Layout : coupe toutes les batteries guides, ou les rétablit. */
+    void basculerLaGuide();
+
+    /** Batterie guide : un clip généré par le batteur dans la case visée, si elle est vide. */
+    void preparerClipDeGuide();
     bool pisteChoisieEstUnSampler() const;
     bool pisteChoisieEstUnSynthe() const;
     bool pisteChoisieJouePads() const;      ///< Batterie, ou sampler découpé : pads en 4 sur 4 et pas à pas

@@ -14,10 +14,63 @@ juce::File BanqueDeSons::racineParDefaut()
     return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("groovebox").getChildFile ("Sons");
 }
 
+bool BanqueDeSons::estUnDossierDeNiveaux (const juce::File& dossier)
+{
+    if (! dossier.isDirectory())
+        return false;
+
+    const auto fichiers = dossier.findChildFiles (juce::File::findFilesAndDirectories, false, "*", juce::File::FollowSymlinks::no);
+    int niveaux = 0;
+
+    for (auto& f : fichiers)
+    {
+        if (f.getFileName().startsWithChar ('.'))
+            continue;
+
+        if (f.isDirectory() || ! estUnSon (f) || ! f.getFileNameWithoutExtension().containsOnly ("0123456789"))
+            return false;
+
+        ++niveaux;
+    }
+
+    return niveaux > 0;
+}
+
+std::vector<const Echantillon*> BanqueDeSons::chargerNiveaux (const juce::String& chemin)
+{
+    std::vector<const Echantillon*> niveaux;
+    const auto dossier = racine.getChildFile (chemin);
+
+    if (! estUnDossierDeNiveaux (dossier))
+    {
+        if (auto* e = charger (chemin))
+            niveaux.push_back (e);
+
+        return niveaux;
+    }
+
+    auto fichiers = dossier.findChildFiles (juce::File::findFiles, false);
+    std::sort (fichiers.begin(), fichiers.end(), [] (const juce::File& a, const juce::File& b)
+               { return a.getFileNameWithoutExtension().getIntValue() < b.getFileNameWithoutExtension().getIntValue(); });
+
+    for (auto& f : fichiers)
+        if (estUnSon (f))
+            if (auto* e = charger (f.getRelativePathFrom (racine)))
+                niveaux.push_back (e);
+
+    return niveaux;
+}
+
 const Echantillon* BanqueDeSons::charger (const juce::String& chemin)
 {
     if (chemin.isEmpty())
         return nullptr;
+
+    if (estUnDossierDeNiveaux (racine.getChildFile (chemin)))
+    {
+        const auto niveaux = chargerNiveaux (chemin);
+        return niveaux.empty() ? nullptr : niveaux.back();
+    }
 
     const juce::ScopedLock sl (verrou);
 
@@ -60,8 +113,21 @@ juce::StringArray BanqueDeSons::sons (const juce::String& categorie) const
 {
     juce::StringArray liste;
 
+    std::map<juce::String, bool> dossiersDeNiveaux;
+
     for (auto& f : racine.getChildFile (categorie).findChildFiles (juce::File::findFiles, true, "*.wav;*.aif;*.aiff;*.flac"))
-        liste.add (f.getRelativePathFrom (racine));
+    {
+        const auto parent = f.getParentDirectory();
+        auto [dejaVu, nouveau] = dossiersDeNiveaux.try_emplace (parent.getFullPathName(), false);
+
+        if (nouveau)
+            dejaVu->second = estUnDossierDeNiveaux (parent);
+
+        if (dejaVu->second)
+            liste.addIfNotAlreadyThere (f.getParentDirectory().getRelativePathFrom (racine));
+        else
+            liste.add (f.getRelativePathFrom (racine));
+    }
 
     liste.sortNatural();
     return liste;

@@ -12,9 +12,44 @@ juce::String nomDuMoteur (MoteurRythmique m)
         case MoteurRythmique::euclidien:    return "Euclidien";
         case MoteurRythmique::grooves:      return "Grooves";
         case MoteurRythmique::maison:       return "Maison";
+        case MoteurRythmique::batteur:      return "Batteur";
     }
 
     return {};
+}
+
+juce::String nomDuStyleDeBatteur (StyleDeBatteur s)
+{
+    switch (s)
+    {
+        case StyleDeBatteur::rock:          return "Rock droit";
+        case StyleDeBatteur::breakbeat:     return "Breakbeat";
+        case StyleDeBatteur::jungle:        return "Jungle";
+        case StyleDeBatteur::dub:           return "Dub demi-tempo";
+        case StyleDeBatteur::shuffle:       return "Shuffle";
+        case StyleDeBatteur::valse:         return "Valse";
+        case StyleDeBatteur::groupe:        return "Groupé"_fr;
+    }
+
+    return {};
+}
+
+juce::String nomDeLaCymbale (CymbaleDeBatteur c)
+{
+    switch (c)
+    {
+        case CymbaleDeBatteur::charleston:          return "Charleston";
+        case CymbaleDeBatteur::charlestonOuvert:    return "Charleston ouvert";
+        case CymbaleDeBatteur::ride:                return "Ride";
+        case CymbaleDeBatteur::cloche:              return "Ride et cloche";
+    }
+
+    return {};
+}
+
+juce::String Generateur::nomDuClip() const
+{
+    return moteur == MoteurRythmique::batteur ? nomDuStyleDeBatteur (style) : nomDuMoteur (moteur);
 }
 
 namespace
@@ -32,7 +67,9 @@ namespace
         return (a * (255 - equilibre) + b * equilibre) >> 8;
     }
 
-    const juce::StringArray nomsDesMoteurs { "euclidien", "grooves", "maison" };
+    const juce::StringArray nomsDesMoteurs { "euclidien", "grooves", "maison", "batteur" };
+    const juce::StringArray nomsDesStyles { "rock", "breakbeat", "jungle", "dub", "shuffle", "valse", "groupe" };
+    const juce::StringArray nomsDesCymbales { "charleston", "charlestonOuvert", "ride", "cloche" };
 
     /** Débuts de groupe, en pas de double-croche. */
     std::vector<int> debutsDeGroupe (const Mesure& m)
@@ -48,6 +85,92 @@ namespace
         }
 
         return debuts;
+    }
+}
+
+namespace
+{
+    /** Un groove de batteur sur une ou deux mesures, une ligne par instrument, un caractère par double-croche.
+        Grosse caisse et caisse claire : X coup principal, Y principal doux, x secondaire, g note fantôme, r coup de cercle.
+        Cymbale : X accent, x normal, h doux, o charleston ouvert, p pied de charleston. */
+    struct MotifDeBatteur
+    {
+        juce::String grosseCaisse, caisseClaire, cymbale;
+    };
+
+    std::vector<MotifDeBatteur> motifsDuStyle (StyleDeBatteur style)
+    {
+        switch (style)
+        {
+            case StyleDeBatteur::rock:
+                return { { "X.......X.x.....", "....X..g....X..g", "X.x.X.x.X.x.X.x." } };
+            case StyleDeBatteur::breakbeat:
+                return { { "X.x.......xx....", "....X..x.x..X..x", "X.x.x.x.X.x.x.x." },
+                         { "X.x.......x.....", ".g..X..x.x..X...", "X.x.x.x.X.x.x.o." } };
+            case StyleDeBatteur::jungle:
+                return { { "X.X.......X.....", "....X..x.x.gX..x", "x.h.x.h.x.h.x.h." },
+                         { "..X.......XX....", ".g..X..x.x..X.gx", "x.h.x.h.x.h.x.o." } };
+            case StyleDeBatteur::dub:
+                return { { "........X.......", "......g.r.....g.", "h.x.h.x.h.x.h.x." },
+                         { "........X.....x.", "......g.r.......", "h.x.h.x.h.x.h.o." } };
+            case StyleDeBatteur::shuffle:
+                return { { "X.........x.", "..g...X...g.", "X.x.x.X.x.x." } };
+            case StyleDeBatteur::valse:
+                return { { "X...........", "..g.Y...Y.g.", "X...x.h.x.h." } };
+            case StyleDeBatteur::groupe:
+                break;
+        }
+
+        return {};
+    }
+
+    /** Groupé : grosse caisse et caisse claire alternent sur les débuts de groupe ; un dernier groupe impair finit par
+        la caisse claire sur sa dernière unité. La cymbale marque chaque unité, accentuée en début de groupe. */
+    MotifDeBatteur motifGroupe (const Mesure& m)
+    {
+        const int n = generateurs::pasParMesure (m);
+        const int unite = juce::jmax (1, 16 / m.denominateur);
+        const int pasDeCymbale = m.denominateur <= 4 ? juce::jmax (1, unite / 2) : unite;
+        MotifDeBatteur motif { juce::String::repeatedString (".", n), juce::String::repeatedString (".", n), juce::String::repeatedString (".", n) };
+        auto poser = [n] (juce::String& ligne, int s, juce::juce_wchar c) { if (s >= 0 && s < n) ligne = ligne.substring (0, s) + juce::String::charToString (c) + ligne.substring (s + 1); };
+        // Un seul groupe (4/4, 3/4) : chaque temps compte pour un groupe
+        auto groupement = m.groupement;
+
+        if (groupement.size() <= 1)
+            groupement.assign ((size_t) juce::jmax (1, m.numerateur), 1);
+
+        std::vector<int> debuts;
+
+        for (int i = 0, t = 0; i < (int) groupement.size(); t += groupement[(size_t) i++])
+            debuts.push_back (t * unite);
+
+        const int groupes = (int) debuts.size();
+
+        for (int i = 0; i < groupes; ++i)
+        {
+            const int s = debuts[(size_t) i];
+            const int taille = groupement[(size_t) i] * unite;
+
+            if (i == 0)
+                poser (motif.grosseCaisse, s, 'X');
+            else if (i % 2 == 1)
+            {
+                poser (motif.caisseClaire, s, 'X');
+
+                if (taille > unite)
+                    poser (motif.caisseClaire, s + taille - unite, 'g');
+            }
+            else
+                poser (motif.grosseCaisse, s, 'x');
+
+            if (i == groupes - 1 && i % 2 == 0 && i > 0 && groupement[(size_t) i] >= 3)
+                poser (motif.caisseClaire, s + taille - unite, 'X');
+        }
+
+        for (int s = 0; s < n; s += pasDeCymbale)
+            poser (motif.cymbale, s, std::find (debuts.begin(), debuts.end(), s) != debuts.end() ? 'X' : 'x');
+
+        return motif;
     }
 }
 
@@ -183,8 +306,150 @@ namespace generateurs
         return niveaux;
     }
 
+    std::vector<StyleDeBatteur> stylesPourLaMesure (const Mesure& m)
+    {
+        if (m.numerateur == 4 && m.denominateur == 4)
+            return { StyleDeBatteur::rock, StyleDeBatteur::breakbeat, StyleDeBatteur::jungle, StyleDeBatteur::dub, StyleDeBatteur::groupe };
+
+        if (m.numerateur == 3 && m.denominateur == 4)
+            return { StyleDeBatteur::valse, StyleDeBatteur::groupe };
+
+        if ((m.numerateur == 6 || m.numerateur == 12) && m.denominateur == 8)
+            return { StyleDeBatteur::shuffle, StyleDeBatteur::groupe };
+
+        return { StyleDeBatteur::groupe };
+    }
+
+    StyleDeBatteur styleJoue (StyleDeBatteur s, const Mesure& m)
+    {
+        const auto styles = stylesPourLaMesure (m);
+        return std::find (styles.begin(), styles.end(), s) != styles.end() ? s : styles.front();
+    }
+
+    /** Le moteur batteur : le groove du style, allégé par l'espace, avec fantômes, crash et roulements de toms. */
+    static std::vector<Note> genererBatteur (const Generateur& g, const Mesure& m, int longueurMesures)
+    {
+        std::vector<Note> notes;
+        const int n = pasParMesure (m);
+        const double p = pas (m);
+        const auto style = styleJoue (g.style, m);
+        auto motifs = style == StyleDeBatteur::groupe ? std::vector<MotifDeBatteur> { motifGroupe (m) } : motifsDuStyle (style);
+        const auto debuts = debutsDeGroupe (m);
+
+        struct Coup { int pas, note, velocite, voix; float importance; };
+
+        for (int mesure = 0; mesure < longueurMesures; ++mesure)
+        {
+            const auto& motif = motifs[(size_t) mesure % motifs.size()];
+            const int longueurDuMotif = motif.grosseCaisse.length();
+            std::vector<Coup> coups;
+
+            // Le motif, répété si la mesure est plus longue que lui (12/8 avec le motif de 6/8)
+            for (int s = 0; s < n; ++s)
+            {
+                const int i = s % juce::jmax (1, longueurDuMotif);
+
+                switch (motif.grosseCaisse[i])
+                {
+                    case 'X': coups.push_back ({ s, 36, 120, 0, 1.0f }); break;
+                    case 'x': coups.push_back ({ s, 36, 98, 0, 0.5f }); break;
+                    default: break;
+                }
+
+                switch (motif.caisseClaire[i])
+                {
+                    case 'X': coups.push_back ({ s, 38, 118, 1, 1.0f }); break;
+                    case 'Y': coups.push_back ({ s, 38, 86, 1, 1.0f }); break;
+                    case 'x': coups.push_back ({ s, 38, 92, 1, 0.55f }); break;
+                    case 'r': coups.push_back ({ s, 37, 105, 1, 1.0f }); break;
+                    case 'g':
+                        if (hasard (g.graine, mesure, s, 31) < g.fantomes)
+                            coups.push_back ({ s, 38, 28 + juce::roundToInt (16.0f * g.fantomes), 3, 0.15f });
+                        break;
+                    default: break;
+                }
+
+                const auto c = motif.cymbale[i];
+
+                if (c == 'p')
+                {
+                    coups.push_back ({ s, 44, 70, 2, 0.35f });
+                    continue;
+                }
+
+                if (c != 'X' && c != 'x' && c != 'h' && c != 'o')
+                    continue;
+
+                const int velocite = c == 'X' ? 105 : c == 'x' ? 82 : c == 'h' ? 62 : 90;
+                const float importance = c == 'X' ? 0.7f : c == 'x' ? 0.45f : c == 'h' ? 0.3f : 0.4f;
+                int note = c == 'o' ? 46 : 42;
+
+                switch (g.cymbale)
+                {
+                    case CymbaleDeBatteur::charleston:          break;
+                    case CymbaleDeBatteur::charlestonOuvert:    note = 46; break;
+                    case CymbaleDeBatteur::ride:                note = 51; break;
+                    case CymbaleDeBatteur::cloche:              note = c == 'X' ? 50 : 51; break;
+                }
+
+                coups.push_back ({ s, note, note == 46 && c != 'o' ? velocite - 15 : velocite, 2, importance });
+            }
+
+            // Roulement de toms à la fin de la mesure : la cymbale et la caisse claire se taisent pendant ce temps
+            const bool roulement = g.roulement > 0 && (mesure + 1) % g.roulement == 0;
+
+            if (roulement)
+            {
+                const int debut = debuts.size() > 1 ? debuts.back() : n - juce::jmax (2, n / 4);
+                coups.erase (std::remove_if (coups.begin(), coups.end(), [debut] (const Coup& c) { return c.pas >= debut && c.note != 36; }), coups.end());
+                static constexpr int toms[] = { 38, 45, 45, 43, 43, 41, 41, 41 };
+
+                for (int s = debut; s < n; ++s)
+                {
+                    const int k = (s - debut) * 8 / juce::jmax (1, n - debut);
+                    coups.push_back ({ s, toms[juce::jlimit (0, 7, k)], 82 + (s - debut) * 36 / juce::jmax (1, n - debut), 4, 0.6f });
+                }
+            }
+
+            // Crash au début du clip puis toutes les « crash » mesures, et après chaque roulement ; jamais à chaque tour
+            // d'un clip plus court que l'écart choisi
+            const bool apresUnRoulement = g.roulement > 0 && mesure > 0 && mesure % g.roulement == 0;
+
+            if (g.crash > 0 && longueurMesures >= g.crash && (mesure % g.crash == 0 || apresUnRoulement))
+            {
+                coups.erase (std::remove_if (coups.begin(), coups.end(), [] (const Coup& c) { return c.pas == 0 && c.voix == 2; }), coups.end());
+                coups.push_back ({ 0, 49, 112, 2, 0.8f });
+            }
+
+            // L'espace : les coups les moins importants s'effacent d'abord ; à fond, il reste le premier temps et le contretemps
+            for (auto& c : coups)
+            {
+                if (c.importance + 1.0e-4f < g.espace)
+                    continue;
+
+                int velocite = c.velocite;
+                double debut = (mesure * n + c.pas) * p;
+
+                if (g.humanisation > 0.0f)
+                {
+                    // Un batteur : vélocités qui respirent, caisse claire un peu en arrière, jamais en avance
+                    velocite += juce::roundToInt ((hasard (g.graine, mesure * 64 + c.pas, c.voix, 7) - 0.5f) * (c.voix == 3 ? 12.0f : 26.0f) * g.humanisation);
+                    debut += (hasard (g.graine, mesure * 64 + c.pas, c.voix, 8) * 0.06 + (c.note == 38 && c.velocite > 80 ? 0.04 : 0.0)) * g.humanisation * p;
+                }
+
+                notes.push_back ({ debut, p * 0.5, c.note, juce::jlimit (1, 127, velocite) });
+            }
+        }
+
+        std::sort (notes.begin(), notes.end(), [] (const Note& a, const Note& b) { return a.debut < b.debut || (a.debut == b.debut && a.hauteur < b.hauteur); });
+        return notes;
+    }
+
     std::vector<Note> generer (const Generateur& g, const Mesure& m, int longueurMesures)
     {
+        if (g.moteur == MoteurRythmique::batteur)
+            return genererBatteur (g, m, longueurMesures);
+
         std::vector<Note> notes;
         const int n = pasParMesure (m);
         const double p = pas (m);
@@ -363,6 +628,13 @@ Generateur Generateur::parDefaut (MoteurRythmique moteur, const Mesure& m)
     if (m.numerateur == 4 && m.denominateur == 4)
         g.voix[1] = { 2, 4, 0, 1.0f };      // caisse claire sur 2 et 4
 
+    // Batteur : le premier style de la mesure, humanisé comme un vrai batteur
+    if (moteur == MoteurRythmique::batteur)
+    {
+        g.style = generateurs::stylesPourLaMesure (m).front();
+        g.humanisation = 0.5f;
+    }
+
     return g;
 }
 
@@ -382,6 +654,11 @@ juce::var Generateur::versJson() const
     o->setProperty ("y", y);
     o->setProperty ("densites", juce::Array<juce::var> { densites[0], densites[1], densites[2] });
     o->setProperty ("chaos", chaos);
+    o->setProperty ("style", nomsDesStyles[(int) style]);
+    o->setProperty ("espace", espace);
+    o->setProperty ("fantomes", fantomes);
+    o->setProperty ("cymbale", nomsDesCymbales[(int) cymbale]);
+    o->setProperty ("crash", crash);
     o->setProperty ("humanisation", humanisation);
     o->setProperty ("roulement", roulement);
     return juce::var (o);
@@ -410,6 +687,16 @@ Generateur Generateur::depuisJson (const juce::var& o)
             g.densites[i] = juce::jlimit (0.0f, 1.0f, (float) (*d)[(int) i]);
 
     g.chaos = juce::jlimit (0.0f, 1.0f, (float) o.getProperty ("chaos", 0.0f));
+    if (const auto i = nomsDesStyles.indexOf (o.getProperty ("style", {}).toString()); i >= 0)
+        g.style = (StyleDeBatteur) i;
+
+    g.espace = juce::jlimit (0.0f, 1.0f, (float) o.getProperty ("espace", 0.0f));
+    g.fantomes = juce::jlimit (0.0f, 1.0f, (float) o.getProperty ("fantomes", 0.5f));
+
+    if (const auto i = nomsDesCymbales.indexOf (o.getProperty ("cymbale", {}).toString()); i >= 0)
+        g.cymbale = (CymbaleDeBatteur) i;
+
+    g.crash = juce::jlimit (0, 16, (int) o.getProperty ("crash", 4));
     g.humanisation = juce::jlimit (0.0f, 1.0f, (float) o.getProperty ("humanisation", 0.0f));
     g.roulement = juce::jlimit (0, 8, (int) o.getProperty ("roulement", 0));
     return g;

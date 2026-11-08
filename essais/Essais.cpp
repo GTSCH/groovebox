@@ -4956,8 +4956,8 @@ public:
             surface.recevoir ({ T::bouton, premierBoutonDuBas + 2, 0, false });
             bouton (Bouton::browse);
             expect (pilote.getPage() == Pilote::Page::browse);
-            tourner (0, 400);    // Machine, la dernière catégorie : Batterie, Synthé, Sampler
-            tourner (1, 16);
+            tourner (0, 400);    // Machine, la dernière catégorie : Batterie, Batterie guide, Synthé, Sampler
+            tourner (1, 24);
             expect (moteur.getMorceau().pistes[2].estUnSampler(), "Browse, Machine : la piste devient un sampler");
             expectEquals (moteur.getMorceau().pistes[2].nom, juce::String ("Sampler"), "elle prend le nom de sa machine");
 
@@ -5004,9 +5004,8 @@ public:
             // Retour au synthé
             bouton (Bouton::session);
             bouton (Bouton::browse);
-            tourner (0, 400);    // jusqu'à « Machine »
-            tourner (1, -16);
-            tourner (1, 8);
+            tourner (0, 400);    // jusqu'à « Machine », ouvert sur Batterie ; deux crans : Synthé
+            tourner (1, 16);
             expect (moteur.getMorceau().pistes[2].estUnSynthe(), "Machine : Synthé ; annonce : "_fr + pilote.getAnnonce().titre + " " + pilote.getAnnonce().valeur
                     + ", son " + nomDuSon (moteur.getMorceau().pistes[2].son));
             expectEquals (moteur.getMorceau().pistes[2].nom, nomDuSon (moteur.getMorceau().pistes[2].son));
@@ -5161,6 +5160,396 @@ public:
     }
 };
 
+//==============================================================================
+class EssaisGuide  : public juce::UnitTest
+{
+public:
+    EssaisGuide()  : juce::UnitTest ("Batterie guide", "groovebox") {}
+
+    static Generateur batteur (StyleDeBatteur style, const Mesure& m)
+    {
+        auto g = Generateur::parDefaut (MoteurRythmique::batteur, m);
+        g.style = style;
+        g.humanisation = 0.0f;
+        g.crash = 0;
+        return g;
+    }
+
+    static int compter (const std::vector<Note>& notes, std::initializer_list<int> hauteurs)
+    {
+        return (int) std::count_if (notes.begin(), notes.end(), [&] (const Note& n) { return std::find (hauteurs.begin(), hauteurs.end(), n.hauteur) != hauteurs.end(); });
+    }
+
+    static bool aUneNote (const std::vector<Note>& notes, int hauteur, double debut)
+    {
+        return std::any_of (notes.begin(), notes.end(), [&] (const Note& n) { return n.hauteur == hauteur && std::abs (n.debut - debut) < 1.0e-6; });
+    }
+
+    /** Un dossier de niveaux d'essai : 3 sinus (300, 500, 700 Hz) de plus en plus forts. */
+    static void dossierDeNiveaux()
+    {
+        for (int k = 0; k < 3; ++k)
+        {
+            juce::AudioBuffer<float> b (1, 24000);
+
+            for (int i = 0; i < b.getNumSamples(); ++i)
+                b.setSample (0, i, (0.1f + 0.4f * (float) k) * (float) std::sin (juce::MathConstants<double>::twoPi * (300.0 + 200.0 * k) * i / 48000.0));
+
+            EssaisSampler::ecrire ("Batterie acoustique/Essai/Caisse claire/" + juce::String (k + 1) + ".wav", b);
+        }
+    }
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+        const auto quatre = Mesure::standard (4, 4);
+
+        beginTest ("Batteur : styles selon la mesure, réglages de départ, JSON"_fr);
+        {
+            expect (generateurs::stylesPourLaMesure (quatre).front() == StyleDeBatteur::rock);
+            expect (generateurs::stylesPourLaMesure (Mesure::standard (3, 4)).front() == StyleDeBatteur::valse);
+            expect (generateurs::stylesPourLaMesure (Mesure::standard (6, 8)).front() == StyleDeBatteur::shuffle);
+            expect (generateurs::stylesPourLaMesure (Mesure::standard (7, 8)).front() == StyleDeBatteur::groupe);
+            expect (generateurs::styleJoue (StyleDeBatteur::jungle, Mesure::standard (7, 8)) == StyleDeBatteur::groupe, "la jungle n'existe qu'en 4/4");
+
+            const auto depart = Generateur::parDefaut (MoteurRythmique::batteur, quatre);
+            expect (depart.style == StyleDeBatteur::rock && depart.humanisation > 0.4f, "rock droit, humanisé"_fr);
+
+            auto g = depart;
+            g.style = StyleDeBatteur::jungle; g.espace = 0.3f; g.fantomes = 0.2f; g.cymbale = CymbaleDeBatteur::ride; g.crash = 8; g.roulement = 4;
+            expect (Generateur::depuisJson (juce::JSON::parse (juce::JSON::toString (g.versJson()))) == g, "relu à l'identique");
+            expectEquals (g.nomDuClip(), juce::String ("Jungle"));
+
+            // Rock droit sans humanisation : grosse caisse sur 1 et 3, caisse claire sur 2 et 4, charleston en croches
+            const auto notes = generateurs::generer (batteur (StyleDeBatteur::rock, quatre), quatre, 1);
+            expect (aUneNote (notes, 36, 0.0) && aUneNote (notes, 36, 2.0), "grosse caisse sur 1 et 3");
+            expect (aUneNote (notes, 38, 1.0) && aUneNote (notes, 38, 3.0), "caisse claire sur 2 et 4");
+            expectEquals (compter (notes, { 42 }), 8, "charleston en croches");
+        }
+
+        beginTest ("Chaque style, dans chaque mesure : grosse caisse, caisse claire, cymbale, jamais en avance"_fr);
+        {
+            for (auto mesure : { quatre, Mesure::standard (3, 4), Mesure::standard (6, 8), Mesure::standard (12, 8), Mesure::standard (7, 8),
+                                 Mesure::standard (9, 8), Mesure::standard (5, 4) })
+                for (auto style : generateurs::stylesPourLaMesure (mesure))
+                {
+                    auto g = batteur (style, mesure);
+                    g.humanisation = 1.0f;
+                    g.crash = 4;
+                    g.roulement = 4;
+                    const auto notes = generateurs::generer (g, mesure, 4);
+                    const auto nom = nomDuStyleDeBatteur (style) + " en " + mesure.nom();
+                    const double p = generateurs::pas (mesure);
+                    const double longueur = 4 * generateurs::pasParMesure (mesure) * p;
+
+                    expect (compter (notes, { 36 }) >= 4, nom + " : grosse caisse");
+                    expect (compter (notes, { 37, 38 }) >= 4, nom + " : caisse claire");
+                    expect (compter (notes, { 42, 46, 51, 50 }) >= 8, nom + " : cymbale");
+                    expect (compter (notes, { 49 }) >= 1, nom + " : crash");
+                    expect (compter (notes, { 41, 43, 45 }) >= 1, nom + " : roulement de toms");
+
+                    for (auto& n : notes)
+                    {
+                        const double reste = n.debut / p - std::floor (n.debut / p + 1.0e-9);
+                        expect (reste < 0.11 && n.debut < longueur, nom + " : note hors grille " + juce::String (n.debut, 3));
+                    }
+                }
+        }
+
+        beginTest ("Espace et fantômes : à fond, il reste le premier temps et le contretemps"_fr);
+        {
+            auto g = batteur (StyleDeBatteur::rock, quatre);
+            const auto complet = generateurs::generer (g, quatre, 2);
+            g.espace = 0.5f;
+            const auto moitie = generateurs::generer (g, quatre, 2);
+            g.espace = 1.0f;
+            const auto vide = generateurs::generer (g, quatre, 2);
+
+            expect (moitie.size() < complet.size() && vide.size() < moitie.size(), "l'espace allège la guide : "
+                    + juce::String ((int) complet.size()) + ", " + juce::String ((int) moitie.size()) + ", " + juce::String ((int) vide.size()));
+            expectEquals ((int) vide.size(), 8, "par mesure : grosse caisse sur 1 et 3, caisse claire sur 2 et 4");
+            expectEquals (compter (vide, { 42, 46, 51 }), 0, "plus de cymbale");
+
+            g = batteur (StyleDeBatteur::breakbeat, quatre);
+            g.fantomes = 1.0f;
+            const auto avec = generateurs::generer (g, quatre, 4);
+            g.fantomes = 0.0f;
+            const auto sans = generateurs::generer (g, quatre, 4);
+            auto douces = [] (const std::vector<Note>& v) { return std::count_if (v.begin(), v.end(), [] (const Note& n) { return n.hauteur == 38 && n.velocite < 60; }); };
+            expect (douces (avec) > 0 && douces (sans) == 0, "les fantômes se règlent"_fr);
+        }
+
+        beginTest ("Roulement de toms à la fin de la mesure, crash à la suivante ; cymbales au choix"_fr);
+        {
+            auto g = batteur (StyleDeBatteur::rock, quatre);
+            g.roulement = 4;
+            g.crash = 4;
+            const auto notes = generateurs::generer (g, quatre, 8);
+            const auto toms = std::count_if (notes.begin(), notes.end(), [] (const Note& n) { return (n.hauteur == 41 || n.hauteur == 43 || n.hauteur == 45) && n.debut >= 15.0 && n.debut < 16.0; });
+            expect (toms >= 3, "toms dans le dernier temps de la mesure 4");
+            expect (aUneNote (notes, 49, 0.0) && aUneNote (notes, 49, 16.0), "crash au début et après le roulement");
+            expect (! aUneNote (notes, 42, 0.0), "le crash remplace le charleston");
+
+            g.crash = 4;
+            const auto court = generateurs::generer (g, quatre, 1);
+            expectEquals (compter (court, { 49 }), 0, "un clip d'une mesure ne crashe pas à chaque tour");
+
+            g = batteur (StyleDeBatteur::rock, quatre);
+            g.cymbale = CymbaleDeBatteur::cloche;
+            const auto cloche = generateurs::generer (g, quatre, 1);
+            expect (compter (cloche, { 50 }) == 4 && compter (cloche, { 51 }) == 4 && compter (cloche, { 42 }) == 0, "ride et cloche sur les temps");
+        }
+
+        beginTest ("Niveaux de frappe : un dossier compte pour un son, la vélocité choisit l'enregistrement"_fr);
+        {
+            dossierDeNiveaux();
+            auto& banque = banqueEssai();
+            const auto sons = banque.sons ("Batterie acoustique");
+            expect (sons.contains ("Batterie acoustique/Essai/Caisse claire") && ! sons.contains ("Batterie acoustique/Essai/Caisse claire/1.wav"), sons.joinIntoString (", "));
+            const auto niveaux = banque.chargerNiveaux ("Batterie acoustique/Essai/Caisse claire");
+            expectEquals ((int) niveaux.size(), 3);
+            expect (banque.charger ("Batterie acoustique/Essai/Caisse claire") == niveaux.back(), "le dossier donne son niveau le plus fort");
+
+            auto m = morceauAvec (120.0, quatre);
+            m.clic.actif = false;
+            m.compressionDeSortie = 0.0f;
+            m.pistes[0].son = SonProvisoire::batterie;
+            m.pistes[0].kit = kitsDeDepart::kit ("Analogique");
+            m.pistes[0].kit.pads[2].son = "Batterie acoustique/Essai/Caisse claire";
+            m.pistes[0].kit.compression = 0.0f;
+
+            for (auto [velocite, attendue] : { std::pair { 127, 700.0 }, std::pair { 8, 300.0 } })
+            {
+                CarteSimulee carte (engine, 2);
+                Moteur moteur (engine, m, &banque);
+                carte.jouer (256);
+                moteur.jouerNote (0, 38, velocite);
+                const auto audio = carte.jouer (12000);
+                expectWithinAbsoluteError (EssaisSampler::frequence (audio, 2400, 12000), attendue, 30.0, "vélocité "_fr + juce::String (velocite));
+            }
+
+            expectEquals (kitsDeDepart::nomDuPad (kitsAcoustiques::kit ("Black Pearl"), 8), juce::String ("Pied de charleston"), "nom de l'instrument au Push");
+        }
+
+        beginTest ("Guide au casque seul : rien dans la sono, la guide dans le casque ; sans sorties 3-4, elle reste dans la sono"_fr);
+        {
+            auto m = morceauAvec (120.0, quatre);
+            m.clic.actif = false;
+            m.musiqueDansCasqueDb = 0.0f;
+            m.assurerScenes (1);
+            m.pistes[0].son = SonProvisoire::batterie;
+            m.pistes[0].kit = kitsDeDepart::kit ("Analogique");
+            m.pistes[0].guide = true;
+            m.pistes[0].guideAuCasqueSeul = true;
+            m.pistes[0].envoiReverbDb = 0.0f;
+            Clip c;
+            c.generateur = batteur (StyleDeBatteur::rock, quatre);
+            c.regenerer (m.mesure, m.gamme);
+            m.scenes[0].clips[0] = c;
+
+            auto jouer = [&] (const Morceau& morceau, int sorties)
+            {
+                CarteSimulee carte (engine, sorties);
+                Moteur moteur (engine, morceau, &banqueEssai());
+                moteur.lancerScene (0);
+                juce::AudioBuffer<float> tout (sorties, 0);
+
+                // Le lancement attend la mesure suivante : 4 secondes, deux mesures à 120
+                for (int k = 0; k < 16; ++k)
+                {
+                    auto bloc = carte.jouer (uneSeconde / 4);
+                    const int avant = tout.getNumSamples();
+                    tout.setSize (sorties, avant + bloc.getNumSamples(), true, true);
+
+                    for (int ch = 0; ch < sorties; ++ch)
+                        tout.copyFrom (ch, avant, bloc, ch, 0, bloc.getNumSamples());
+
+                    moteur.avancer();
+                }
+
+                return tout;
+            };
+
+            auto audio = jouer (m, 4);
+            expect (crete (audio, 0) < 0.001f && crete (audio, 1) < 0.001f, "sono muette : "_fr + juce::String (crete (audio, 0)));
+            expect (crete (audio, 2) > 0.05f, "la guide dans le casque");
+
+            m.pistes[0].guideAuCasqueSeul = false;
+            audio = jouer (m, 4);
+            expect (crete (audio, 0) > 0.05f && crete (audio, 2) > 0.05f, "sono et casque");
+
+            m.pistes[0].guideAuCasqueSeul = true;
+            audio = jouer (m, 2);
+            expect (crete (audio, 0) > 0.05f, "sans sorties 3-4, la guide reste dans la sono");
+
+            m.pistes[0].mute = true;
+            audio = jouer (m, 4);
+            expect (crete (audio, 2) < 0.001f, "coupée : plus rien, même dans le casque");
+        }
+
+        beginTest ("Push : Machine, Batterie guide ; Layout la coupe et la rétablit ; la page du batteur"_fr);
+        {
+            using T = Evenement::Type;
+            CarteSimulee carte (engine, 2);
+            auto m = morceauAvec (120.0, quatre);
+            m.assurerScenes (8);
+            Moteur moteur (engine, m, &banqueEssai());
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            auto bouton = [&] (Bouton b) { surface.recevoir ({ T::bouton, (int) b, 1, true }); surface.recevoir ({ T::bouton, (int) b, 0, false }); };
+            auto tourner = [&] (int encodeur, int pas) { surface.recevoir ({ T::encodeurTourne, encodeur, pas, false }); };
+
+            bouton (Bouton::layout);
+            expect (pilote.getAnnonce().valeur.contains ("Batterie guide"), "sans guide, Layout dit comment en faire une");
+
+            // Piste 3 (Nappe), Browse, Machine : Batterie guide (la deuxième)
+            surface.recevoir ({ T::bouton, premierBoutonDuBas + 2, 1, true });
+            surface.recevoir ({ T::bouton, premierBoutonDuBas + 2, 0, false });
+            bouton (Bouton::browse);
+            tourner (0, 400);
+            tourner (1, -16);
+            tourner (1, 8);
+            const auto& p = moteur.getMorceau().pistes[2];
+            expect (p.estUneGuide(), "la piste devient une batterie guide");
+            expectEquals (p.nom, juce::String ("Guide"));
+            const auto* clip = moteur.getMorceau().clip (2, 0);
+            expect (clip != nullptr && clip->generateur && clip->generateur->moteur == MoteurRythmique::batteur && clip->longueurMesures == 4,
+                    "un clip du batteur, 4 mesures, prêt à jouer"_fr);
+
+            bouton (Bouton::layout);
+            expect (moteur.getMorceau().pistes[2].mute && pilote.getAnnonce().valeur == "Coupée"_fr, "Layout coupe la guide");
+            bouton (Bouton::layout);
+            expect (! moteur.getMorceau().pistes[2].mute, "Layout la rétablit"_fr);
+
+            // Device : les pads, puis le générateur du batteur ; le style passe au breakbeat
+            bouton (Bouton::device);
+            bouton (Bouton::device);
+            expect (pilote.getPage() == Pilote::Page::generateur);
+            tourner (0, 8);
+            clip = moteur.getMorceau().clip (2, 0);
+            expect (clip != nullptr && clip->generateur->style == StyleDeBatteur::breakbeat && clip->nom == "Breakbeat", "encodeur 1 : le style");
+            tourner (1, 50);
+            expectWithinAbsoluteError (moteur.getMorceau().clip (2, 0)->generateur->espace, 0.5f, 0.01f, "encodeur 2 : l'espace");
+
+            // Commun : la guide au casque seul
+            bouton (Bouton::device);
+            expect (pilote.getPage() == Pilote::Page::commun);
+            tourner (5, 8);
+            expect (moteur.getMorceau().pistes[2].guideAuCasqueSeul, "encodeur 6 : casque seul");
+
+            // Retour à une batterie ordinaire
+            bouton (Bouton::browse);
+            tourner (0, 400);
+            tourner (1, -16);
+            expect (! moteur.getMorceau().pistes[2].guide && moteur.getMorceau().pistes[2].estUneBatterie(), "Machine : Batterie, plus de guide");
+        }
+    }
+};
+
+
+//==============================================================================
+/** Hors série : chaque groove du batteur, 4 mesures dans sa mesure et à son tempo, avec les kits acoustiques du vrai
+    dossier Sons, rendus à la suite dans Musique, groovebox, pour l'écouter. */
+class EssaisEcouteGuide  : public juce::UnitTest
+{
+public:
+    EssaisEcouteGuide()  : juce::UnitTest ("Écoute de la batterie guide"_fr, "groovebox-long") {}
+
+    struct Partie
+    {
+        const char* titre;
+        StyleDeBatteur style;
+        Mesure mesure;
+        double tempo;
+        const char* kit;
+        CymbaleDeBatteur cymbale;
+        float espace;
+    };
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+        BanqueDeSons banque;    // le vrai dossier Sons
+
+        beginTest ("Les grooves du batteur, l'un après l'autre"_fr);
+
+        const auto quatre = Mesure::standard (4, 4);
+        const std::vector<Partie> parties {
+            { "Rock droit, 120, Red Zeppelin", StyleDeBatteur::rock, quatre, 120.0, "Red Zeppelin", CymbaleDeBatteur::charleston, 0.0f },
+            { "Breakbeat, 100, Black Pearl", StyleDeBatteur::breakbeat, quatre, 100.0, "Black Pearl", CymbaleDeBatteur::charleston, 0.0f },
+            { "Jungle, 170, Black Pearl, ride", StyleDeBatteur::jungle, quatre, 170.0, "Black Pearl", CymbaleDeBatteur::ride, 0.0f },
+            { "Dub demi-tempo, 75, Blonde Bop fagots", StyleDeBatteur::dub, quatre, 75.0, "Blonde Bop fagots", CymbaleDeBatteur::charleston, 0.0f },
+            { "Shuffle 6/8, 100, Blonde Bop", StyleDeBatteur::shuffle, Mesure::standard (6, 8), 100.0, "Blonde Bop", CymbaleDeBatteur::charleston, 0.0f },
+            { "Valse 3/4, 150, Blonde Bop fagots, ride", StyleDeBatteur::valse, Mesure::standard (3, 4), 150.0, "Blonde Bop fagots", CymbaleDeBatteur::ride, 0.0f },
+            { "7/8 en 2+2+3, 140, Black Pearl", StyleDeBatteur::groupe, Mesure::standard (7, 8), 140.0, "Black Pearl", CymbaleDeBatteur::charleston, 0.0f },
+            { "9/8 en 2+2+2+3, 140, Cajón", StyleDeBatteur::groupe, Mesure::standard (9, 8), 140.0, "Cajón", CymbaleDeBatteur::charleston, 0.0f },
+            { "Rock droit avec l'espace à 70 %, 120, Black Pearl", StyleDeBatteur::rock, quatre, 120.0, "Black Pearl", CymbaleDeBatteur::charleston, 0.7f },
+        };
+
+        juce::AudioBuffer<float> tout (2, 0);
+
+        for (auto& partie : parties)
+        {
+            auto m = morceauAvec (partie.tempo, partie.mesure);
+            m.clic.actif = false;
+            m.assurerScenes (1);
+            auto& piste = m.pistes[0];
+            piste.son = SonProvisoire::batterie;
+            piste.guide = true;
+            piste.kit = kitsAcoustiques::kit (juce::String::fromUTF8 (partie.kit));
+            piste.envoiReverbDb = -18.0f;
+
+            Clip c;
+            c.longueurMesures = 4;
+            c.generateur = Generateur::parDefaut (MoteurRythmique::batteur, m.mesure);
+            c.generateur->style = partie.style;
+            c.generateur->cymbale = partie.cymbale;
+            c.generateur->espace = partie.espace;
+            c.generateur->roulement = 4;
+            c.regenerer (m.mesure, m.gamme);
+            m.scenes[0].clips[0] = c;
+
+            const double secondes = 4.0 * m.mesure.numerateur * 4.0 / m.mesure.denominateur * 60.0 / m.tempo;
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, m, &banque);
+            moteur.lancerScene (0);
+            const int debut = tout.getNumSamples();
+
+            for (int k = 0; k < (int) std::ceil ((secondes + 1.0) * 4.0); ++k)
+            {
+                auto bloc = EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde / 4);
+                const int avant = tout.getNumSamples();
+                tout.setSize (2, avant + bloc.getNumSamples(), true, true);
+
+                for (int ch = 0; ch < 2; ++ch)
+                    tout.copyFrom (ch, avant, bloc, ch, 0, bloc.getNumSamples());
+            }
+
+            // La dernière seconde : la queue des cymbales s'éteint doucement
+            const int fin = tout.getNumSamples();
+            const int fondu = (int) frequence;
+
+            for (int ch = 0; ch < 2; ++ch)
+                tout.applyGainRamp (ch, fin - fondu, fondu, 1.0f, 0.0f);
+
+            const float niveau = niveauEfficace (tout, 0, debut, fin);
+            logMessage ("  " + juce::String::fromUTF8 (partie.titre) + " : " + juce::String (juce::Decibels::gainToDecibels (niveau), 1) + " dB efficaces, crête "_fr
+                        + juce::String (juce::Decibels::gainToDecibels (tout.getMagnitude (0, debut, fin - debut)), 1) + " dB");
+            expect (niveau > 0.01f, juce::String::fromUTF8 (partie.titre) + " sonne");
+        }
+
+        expect (tout.getMagnitude (0, tout.getNumSamples()) < 0.95f, "sous la protection de sortie");
+        const auto fichier = juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("groovebox").getChildFile ("Batterie guide (écoute).wav"_fr);
+        fichier.deleteFile();
+        juce::WavAudioFormat wav;
+
+        if (auto ecrivain = std::unique_ptr<juce::AudioFormatWriter> (wav.createWriterFor (new juce::FileOutputStream (fichier), frequence, 2, 24, {}, 0)))
+            ecrivain->writeFromAudioSampleBuffer (tout, 0, tout.getNumSamples());
+
+        logMessage ("  fichier : " + fichier.getFullPathName() + ", " + juce::String (tout.getNumSamples() / frequence, 1) + " s");
+    }
+};
+
 static EssaisModele essaisModele;
 static EssaisSorties essaisSorties;
 static EssaisHorloge essaisHorloge;
@@ -5180,6 +5569,8 @@ static EssaisRejeuLong essaisRejeuLong;
 static EssaisDemo2 essaisDemo2;
 static EssaisSampler essaisSampler;
 static EssaisEcouteSampler essaisEcouteSampler;
+static EssaisGuide essaisGuide;
+static EssaisEcouteGuide essaisEcouteGuide;
 
 } // namespace groovebox
 

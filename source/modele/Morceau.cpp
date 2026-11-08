@@ -168,7 +168,15 @@ juce::var Morceau::versJson() const
         objet->setProperty ("effets", effets);
 
         if (p.estUneBatterie())
+        {
             objet->setProperty ("kit", p.kit.versJson());
+
+            if (p.guide)
+            {
+                objet->setProperty ("guide", true);
+                objet->setProperty ("guideAuCasqueSeul", p.guideAuCasqueSeul);
+            }
+        }
         else if (p.estUnSampler())
             objet->setProperty ("sampler", p.sampler.versJson());
         else
@@ -385,6 +393,8 @@ Morceau Morceau::depuisJson (const juce::var& v)
             piste.panoramique = juce::jlimit (-1.0f, 1.0f, (float) p.getProperty ("panoramique", 0.0f));
             piste.mute = p.getProperty ("mute", false);
             piste.solo = p.getProperty ("solo", false);
+            piste.guide = p.getProperty ("guide", false);
+            piste.guideAuCasqueSeul = p.getProperty ("guideAuCasqueSeul", false);
 
             piste.envoiDelayDb = juce::jlimit (-60.0f, 6.0f, (float) p.getProperty ("envoiDelayDb", -60.0f));
             piste.envoiReverbDb = juce::jlimit (-60.0f, 6.0f, (float) p.getProperty ("envoiReverbDb", -60.0f));

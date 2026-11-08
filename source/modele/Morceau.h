@@ -73,16 +73,19 @@ struct Piste
     float panoramique = 0.0f;       ///< -1 à gauche, 1 à droite
     bool mute = false, solo = false;
     std::optional<float> swing;     ///< Propre à la piste ; sinon, le swing du morceau
-    Kit kit;
+    Kit kit;                        ///< Utilisé quand le son est Batterie ou Percussions
+    bool guide = false;             ///< Batterie guide : coupée d'un geste (Layout), sans elle dans les exports « sans guide »
+    bool guideAuCasqueSeul = false; ///< Batterie guide entendue seulement dans le casque du batteur, pas dans la sono
     std::array<std::optional<Effet>, 3> effets;     ///< Effets d'insertion
     float envoiDelayDb = -60.0f, envoiReverbDb = -60.0f;  ///< Envois vers les effets de départ (-60 : coupé)
     juce::String sonDeSynthe;       ///< Son de Surge XT (pistes de synthé), par son nom
     std::array<float, 8> macros { 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
-    ReglagesSampler sampler;        ///< Utilisé quand le son est Sampler                        ///< Utilisé quand le son est Batterie ou Percussions
+    ReglagesSampler sampler;        ///< Utilisé quand le son est Sampler
 
     bool estUneBatterie() const     { return son == SonProvisoire::batterie || son == SonProvisoire::percussions; }
     bool estUnSampler() const       { return son == SonProvisoire::sampler; }
     bool estUnSynthe() const        { return ! estUneBatterie() && ! estUnSampler(); }
+    bool estUneGuide() const        { return guide && estUneBatterie(); }
 
     /** Pads en 4 sur 4, pas à pas et générateur rythmique : batterie, ou sampler découpé. */
     bool jouePads() const           { return estUneBatterie() || (estUnSampler() && sampler.mode == ModeSampler::decoupe); }

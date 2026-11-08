@@ -30,16 +30,20 @@ public:
     void deinitialise() override {}
     void applyToBuffer (const te::PluginRenderContext&) override;
 
-    /** Fil principal : applique un kit (le son de chaque pad doit déjà être chargé dans la banque). */
+    /** Fil principal : applique un kit. Un pad dont le son est un dossier de niveaux (batterie acoustique) choisit
+        le niveau de frappe selon la vélocité, avec un léger hasard pour éviter l'effet mitraillette. */
     void appliquerKit (const Kit&, BanqueDeSons&);
 
     /** Position latérale de chaque pad quand la largeur vaut 1 (-1 gauche, +1 droite). */
     static float placementDuPad (int pad);
 
 private:
+    static constexpr int niveauxMax = 12;
+
     struct Reglages
     {
-        std::atomic<const Echantillon*> son { nullptr };
+        std::array<std::atomic<const Echantillon*>, niveauxMax> niveaux {};    // du plus doux au plus fort
+        std::atomic<int> nombreDeNiveaux { 0 };
         std::atomic<float> vitesse { 1.0f };        // 2^(demi-tons / 12)
         std::atomic<float> dureeDeVie { 0.0f };     // secondes ; 0 : le son entier
         std::atomic<float> saturation { 0.0f }, couleur { 0.0f }, gain { 1.0f }, panoramique { 0.0f };
@@ -61,6 +65,7 @@ private:
     std::atomic<float> compression { 0.0f };
     double frequenceEchantillonnage = 48000.0;
     float enveloppeDuCompresseur = 0.0f;
+    juce::uint32 hasardDesNiveaux = 12345;      // fil audio seulement
 
     void frapper (int pad, float velocite);
     void rendre (juce::AudioBuffer<float>&, int debut, int nombre);
