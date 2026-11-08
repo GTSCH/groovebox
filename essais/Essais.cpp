@@ -102,6 +102,7 @@ namespace
             d.deleteRecursively();
             d.createDirectory();
             fabriqueDeSons::assurerKitsDeDepart (d);
+            fabriqueDeSons::assurerSonsDuSampler (d, false);
             return d;
         }();
 
@@ -4579,6 +4580,587 @@ public:
     }
 };
 
+//==============================================================================
+class EssaisSampler  : public juce::UnitTest
+{
+public:
+    EssaisSampler()  : juce::UnitTest ("Sampler", "groovebox") {}
+
+    /** Écrit un son d'essai dans la banque (une seule fois). */
+    static void ecrire (const juce::String& chemin, const juce::AudioBuffer<float>& b)
+    {
+        auto f = banqueEssai().getRacine().getChildFile (chemin);
+
+        if (f.existsAsFile())
+            return;
+
+        f.getParentDirectory().createDirectory();
+        juce::WavAudioFormat wav;
+        auto flux = f.createOutputStream();
+        std::unique_ptr<juce::AudioFormatWriter> e (wav.createWriterFor (flux.release(), 48000.0, (unsigned int) b.getNumChannels(), 24, {}, 0));
+        e->writeFromAudioSampleBuffer (b, 0, b.getNumSamples());
+    }
+
+    /** 16 tranches de 0,1 s : la tranche k est un sinus de 200 + 100 k Hz. */
+    static void fichierEnTranches()
+    {
+        juce::AudioBuffer<float> b (1, 16 * 4800);
+
+        for (int i = 0; i < b.getNumSamples(); ++i)
+        {
+            const int k = i / 4800;
+            b.setSample (0, i, 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * (200.0 + 100.0 * k) * i / 48000.0));
+        }
+
+        ecrire ("Essais/Tranches.wav", b);
+    }
+
+    /** Une mesure de 4/4 à 120 (2 s) : un clic court sur chaque temps, et un sinus de 440 Hz très faible entre les clics. */
+    static void fichierBoucle()
+    {
+        juce::AudioBuffer<float> b (2, 96000);
+        b.clear();
+
+        for (int i = 0; i < b.getNumSamples(); ++i)
+        {
+            float x = 0.02f * (float) std::sin (juce::MathConstants<double>::twoPi * 440.0 * i / 48000.0);
+
+            if (i % 24000 < 240)
+                x += 0.8f * (1.0f - (float) (i % 24000) / 240.0f);
+
+            b.setSample (0, i, x);
+            b.setSample (1, i, x);
+        }
+
+        ecrire ("Essais/Boucle 120.wav", b);
+    }
+
+    /** Hauteur d'un son riche en harmoniques : la période qui ressemble le plus au son lui-même (de 80 à 1000 Hz). */
+    static double hauteurParAutocorrelation (const juce::AudioBuffer<float>& a, int debut, int longueur)
+    {
+        auto d = a.getReadPointer (0);
+        int meilleure = 48;
+        double meilleurScore = -1.0e9;
+
+        for (int periode = 48; periode <= 600; ++periode)
+        {
+            double score = 0.0;
+
+            for (int i = debut; i < debut + longueur; ++i)
+                score += d[i] * d[i + periode];
+
+            if (score > meilleurScore)
+            {
+                meilleurScore = score;
+                meilleure = periode;
+            }
+        }
+
+        return 48000.0 / meilleure;
+    }
+
+    static double frequence (const juce::AudioBuffer<float>& a, int debut, int fin)
+    {
+        auto d = a.getReadPointer (0);
+        int passages = 0;
+
+        for (int i = debut + 1; i < fin; ++i)
+            if (d[i - 1] <= 0.0f && d[i] > 0.0f)
+                ++passages;
+
+        return passages * 48000.0 / (fin - debut);
+    }
+
+    /** Début des coups (montées au-dessus de 0,2 après un passage sous 0,05 pendant 20 ms). */
+    static std::vector<int> coups (const juce::AudioBuffer<float>& a, float seuil = 0.2f)
+    {
+        std::vector<int> liste;
+        auto d = a.getReadPointer (0);
+        int calme = 0;
+
+        for (int i = 0; i < a.getNumSamples(); ++i)
+        {
+            if (std::abs (d[i]) > seuil && calme > 960)
+                liste.push_back (i);
+
+            calme = std::abs (d[i]) < 0.05f ? calme + 1 : 0;
+        }
+
+        return liste;
+    }
+
+    static Morceau morceauSampler (ReglagesSampler r, double tempo = 120.0)
+    {
+        auto m = morceauAvec (tempo, Mesure::standard (4, 4));
+        m.clic.actif = false;
+        m.compressionDeSortie = 0.0f;
+        m.pistes[0].son = SonProvisoire::sampler;
+        m.pistes[0].sampler = r;
+        return m;
+    }
+
+    static juce::AudioBuffer<float> jouer (te::Engine& engine, const Morceau& m, int note, int duree, int relacheApres = -1)
+    {
+        CarteSimulee carte (engine, 2);
+        Moteur moteur (engine, m, &banqueEssai());
+        carte.jouer (256);
+        moteur.jouerNote (0, note, 127);
+
+        if (relacheApres < 0)
+            return carte.jouer (duree);
+
+        auto avant = carte.jouer (relacheApres);
+        moteur.relacherNote (0, note);
+        auto apres = carte.jouer (duree - relacheApres);
+        juce::AudioBuffer<float> tout (2, duree);
+        tout.copyFrom (0, 0, avant, 0, 0, relacheApres);
+        tout.copyFrom (0, relacheApres, apres, 0, 0, duree - relacheApres);
+        return tout;
+    }
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+        EssaisBatterie::fichierSinus();
+        fichierEnTranches();
+        fichierBoucle();
+
+        beginTest ("Réglages du sampler : JSON et longueur devinée des boucles"_fr);
+        {
+            ReglagesSampler r;
+            r.son = "Boucles/Essai.wav";
+            r.mode = ModeSampler::decoupe;
+            r.debut = 0.25f; r.longueur = 0.5f; r.hauteur = -7.0f; r.filtre = 0.3f; r.envers = true; r.mesuresDeBoucle = 4;
+            expect (ReglagesSampler::depuisJson (juce::JSON::parse (juce::JSON::toString (r.versJson()))) == r, "relu à l'identique");
+
+            auto m = morceauSampler (r);
+            const auto relu = Morceau::depuisJson (m.versJson());
+            expect (relu.pistes[0].estUnSampler() && relu.pistes[0].sampler == r, "le morceau garde la piste sampler");
+
+            ReglagesSampler auto_;
+            expectEquals (sampler::mesuresDeLaBoucle (auto_, 4.0, 120.0, Mesure::standard (4, 4)), 2, "4 s à 120 en 4/4 : 2 mesures");
+            expectEquals (sampler::mesuresDeLaBoucle (auto_, 2.4, 120.0, Mesure::standard (4, 4)), 1, "2,4 s : 1 mesure (100 BPM)");
+            expectEquals (sampler::mesuresDeLaBoucle (auto_, 3.0, 120.0, Mesure::standard (6, 8)), 2, "3 s en 6/8 à 120 : 2 mesures");
+            ReglagesSampler jungle;
+            jungle.son = "Boucles/Jungle 170.wav";
+            expectEquals (sampler::tempoDansLeNom (jungle.son), 170.0);
+            expectEquals (sampler::tempoDansLeNom ("Mes sons/loop_92bpm.wav"), 92.0);
+            expectEquals (sampler::tempoDansLeNom ("Voix/Allez.aiff"), 0.0);
+            expectEquals (sampler::mesuresDeLaBoucle (jungle, 2.0 * 4 * 60.0 / 170.0, 120.0, Mesure::standard (4, 4)), 2, "Jungle 170 : 2 mesures, d'après son nom");
+
+            const auto [d, f] = r.partieJouee();
+            expectWithinAbsoluteError (d, 0.25, 1.0e-6);
+            expectWithinAbsoluteError (f, 0.25 + 0.75 * 0.5, 1.0e-6);
+        }
+
+        beginTest ("Sons de départ du sampler : boucles à la bonne durée, textures en do, voix du Mac"_fr);
+        {
+            for (auto& b : fabriqueDeSons::bouclesDeDepart())
+            {
+                auto* e = banqueEssai().charger ("Boucles/" + b.nom + ".wav");
+                expect (e != nullptr, b.nom);
+
+                if (e == nullptr)
+                    continue;
+
+                const double attendu = b.mesures * b.numerateur * 4.0 / b.denominateur * 60.0 / b.tempo;
+                expectWithinAbsoluteError (e->audio.getNumSamples() / e->frequence, attendu, 0.001, b.nom + " : durée"_fr);
+                expect (e->audio.getMagnitude (0, e->audio.getNumSamples()) > 0.5f, b.nom + " : niveau");
+
+                ReglagesSampler r;
+                r.son = "Boucles/" + b.nom + ".wav";
+                expectEquals (sampler::mesuresDeLaBoucle (r, attendu, 120.0, Mesure::standard (b.numerateur, b.denominateur)), b.mesures, b.nom + " : mesures devinées"_fr);
+            }
+
+            for (auto& t : { "Textures/Drone en do.wav", "Textures/Cloche en do.wav", "Textures/Corde en do.wav", "Textures/Souffle.wav",
+                             "One-shots/Laser.wav", "One-shots/Gong.wav", "One-shots/Bulle.wav", "One-shots/Ressort.wav" })
+            {
+                auto* e = banqueEssai().charger (t);
+                expect (e != nullptr && e->audio.getMagnitude (0, e->audio.getNumSamples()) > 0.3f, t);
+            }
+
+            expect (banqueEssai().charger ("One-shots/Sirène dub.wav"_fr) != nullptr, "sirène");
+
+            // La corde en do est accordée sur la note 60
+            if (auto* corde = banqueEssai().charger ("Textures/Corde en do.wav"))
+                expectWithinAbsoluteError (hauteurParAutocorrelation (corde->audio, 4800, 9600), 261.6, 4.0, "corde en do");
+
+            // Voix : la synthèse vocale du Mac, dans un dossier à part
+            auto dossier = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("groovebox-essais-voix");
+            dossier.deleteRecursively();
+            fabriqueDeSons::assurerSonsDuSampler (dossier, true);
+            BanqueDeSons voix (dossier);
+            const auto liste = voix.sons ("Voix");
+            expect (liste.size() == 6, juce::String (liste.size()) + " voix");
+
+            if (auto* e = liste.isEmpty() ? nullptr : voix.charger (liste[0]))
+                expect (e->audio.getNumSamples() > 4800 && e->audio.getMagnitude (0, e->audio.getNumSamples()) > 0.1f, "voix audible : " + liste[0]);
+
+            // Importer : copier un son glissé sur la fenêtre dans « Mes sons »
+            const auto importes = voix.importer ({ dossier.getChildFile ("One-shots/Gong.wav").getFullPathName(),
+                                                   banqueEssai().getRacine().getChildFile ("One-shots/Gong.wav").getFullPathName(),
+                                                   dossier.getChildFile ("rien.txt").getFullPathName() });
+            expectEquals (importes.size(), 2);
+            expectEquals (importes[0], juce::String ("One-shots/Gong.wav"), "déjà dans Sons : pris tel quel"_fr);
+            expect (importes[1].startsWith ("Mes sons/Gong") && voix.charger (importes[1]) != nullptr, "copié dans Mes sons : " + importes[1]);
+            dossier.deleteRecursively();
+        }
+
+        beginTest ("Un coup : la note transpose, le relâché ne coupe pas ; en notes, le relâché éteint"_fr);
+        {
+            ReglagesSampler r;
+            r.son = "Essais/Sinus 440.wav";
+            auto a = jouer (engine, morceauSampler (r), 60, 24000);
+            expectWithinAbsoluteError (frequence (a, 4800, 19200), 440.0, 8.0, "note 60 : hauteur d'origine");
+            a = jouer (engine, morceauSampler (r), 72, 24000);
+            expectWithinAbsoluteError (frequence (a, 4800, 19200), 880.0, 12.0, "note 72 : une octave au-dessus");
+
+            r.hauteur = 7.0f;
+            a = jouer (engine, morceauSampler (r), 60, 24000);
+            expectWithinAbsoluteError (frequence (a, 4800, 19200), 440.0 * std::pow (2.0, 7.0 / 12.0), 10.0, "hauteur +7");
+            r.hauteur = 0.0f;
+
+            a = jouer (engine, morceauSampler (r), 60, 36000, 4800);
+            expect (niveauEfficace (a, 0, 24000, 30000) > 0.1f, "un coup : le son continue après le relâché"_fr);
+
+            r.mode = ModeSampler::notes;
+            r.relache = 0.0f;
+            a = jouer (engine, morceauSampler (r), 60, 36000, 4800);
+            expect (niveauEfficace (a, 0, 2000, 4000) > 0.1f, "en notes : le son joue tant que la note est tenue");
+            expect (niveauEfficace (a, 0, 24000, 30000) < 0.001f, "en notes : relâché, il s'éteint"_fr);
+        }
+
+        beginTest ("Découpé : chaque pad joue sa tranche ; à l'envers, le son part de la fin"_fr);
+        {
+            ReglagesSampler r;
+            r.son = "Essais/Tranches.wav";
+            r.mode = ModeSampler::decoupe;
+            auto a = jouer (engine, morceauSampler (r), 36 + 5, 9600);
+            expectWithinAbsoluteError (frequence (a, 300, 4300), 700.0, 15.0, "tranche 6 : 700 Hz");
+            expect (niveauEfficace (a, 0, 5400, 9600) < 0.001f, "la tranche dure 0,1 s");
+            expect (niveauEfficace (jouer (engine, morceauSampler (r), 70, 4800), 0) < 0.001f, "note hors des 16 pads : rien");
+
+            r.mode = ModeSampler::unCoup;
+            r.envers = true;
+            a = jouer (engine, morceauSampler (r), 60, 9600);
+            expectWithinAbsoluteError (frequence (a, 300, 4300), 1700.0, 25.0, "à l'envers : la dernière tranche d'abord"_fr);
+
+            r.envers = false;
+            r.debut = 0.5f;
+            a = jouer (engine, morceauSampler (r), 60, 9600);
+            expectWithinAbsoluteError (frequence (a, 300, 4300), 1000.0, 20.0, "début à la moitié : la tranche 9"_fr);
+        }
+
+        beginTest ("Filtre : passe-bas et passe-haut atténuent un sinus de 440 Hz"_fr);
+        {
+            ReglagesSampler r;
+            r.son = "Essais/Sinus 440.wav";
+            const auto neutre = niveauEfficace (jouer (engine, morceauSampler (r), 60, 24000), 0, 4800, 19200);
+            r.filtre = -1.0f;
+            const auto bas = niveauEfficace (jouer (engine, morceauSampler (r), 60, 24000), 0, 4800, 19200);
+            r.filtre = 1.0f;
+            const auto haut = niveauEfficace (jouer (engine, morceauSampler (r), 60, 24000), 0, 4800, 19200);
+            expect (neutre > 0.1f);
+            expect (bas < neutre * 0.3f, "passe-bas : " + juce::String (bas / neutre, 3));
+            expect (haut < neutre * 0.1f, "passe-haut : " + juce::String (haut / neutre, 3));
+        }
+
+        beginTest ("Étirer une boucle : la durée suit le tempo, les coups restent à leur place, la hauteur ne change pas"_fr);
+        {
+            auto* son = banqueEssai().charger ("Essais/Boucle 120.wav");
+            expect (son != nullptr);
+
+            for (double secondes : { 2.4, 1.6 })
+            {
+                auto e = EtireurDeBoucles::etirer (*son, 0.0, 1.0, secondes, 0.0f, 48000.0);
+                expect (e != nullptr);
+
+                if (e == nullptr)
+                    continue;
+
+                const int n = e->audio.getNumSamples();
+                expectEquals (n, juce::roundToInt (secondes * 48000.0));
+
+                // La boucle jouée deux fois : un coup peut tomber juste avant la fin du tour et s'enchaîner avec le début
+                juce::AudioBuffer<float> deuxTours (1, 2 * n);
+                deuxTours.copyFrom (0, 0, e->audio, 0, 0, n);
+                deuxTours.copyFrom (0, n, e->audio, 0, 0, n);
+                const double periode = n / 4.0;
+                int compte = 0;
+                double ecartMax = 0.0;
+
+                for (auto c : coups (deuxTours))
+                    if (c >= periode / 2 && c < n + periode / 2)
+                    {
+                        ++compte;
+                        ecartMax = std::max (ecartMax, std::abs (c - std::round (c / periode) * periode));
+                    }
+
+                expectEquals (compte, 4, "coups par tour à " + juce::String (secondes) + " s");
+                expect (ecartMax < 0.012 * 48000.0, "coups à leur place à " + juce::String (secondes) + " s : écart max "_fr + juce::String (ecartMax / 48.0, 1) + " ms");
+            }
+
+            auto e = EtireurDeBoucles::etirer (*son, 0.0, 1.0, 2.4, 0.0f, 48000.0);
+            expectWithinAbsoluteError (frequence (e->audio, 3000, 11000), 440.0, 15.0, "étirée, le sinus reste à 440 Hz"_fr);
+        }
+
+        beginTest ("Boucle dans le moteur : calée au tempo du morceau, relancée à chaque tour du clip"_fr);
+        {
+            ReglagesSampler r;
+            r.son = "Essais/Boucle 120.wav";
+            r.mode = ModeSampler::boucle;
+            auto m = morceauSampler (r, 100.0);
+            m.assurerScenes (1);
+            m.scenes[0].clips[0] = Clip { "Boucle", 1, { { 0.0, 4.0, 60, 100 } } };
+
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, m, &banqueEssai());
+            expectWithinAbsoluteError (moteur.secondesDeLaBoucle (0), 2.4, 1.0e-9, "1 mesure à 100 : 2,4 s");
+            moteur.attendreLesBoucles();
+            expect (moteur.samplerDeLaVoix (0, 0)->getBoucleEtiree() != nullptr, "la boucle étirée est installée");
+            moteur.lancerClip (0, 0);
+            carte.jouer (128);
+            moteur.avancer();
+            auto a = carte.jouer (8 * uneSeconde);
+            const auto c = coups (a);
+            expect (c.size() >= 12, juce::String ((int) c.size()) + " coups");
+
+            double ecartMax = 0.0;
+
+            for (size_t k = 1; k < c.size(); ++k)
+                ecartMax = std::max (ecartMax, std::abs ((double) (c[k] - c[k - 1]) - 0.6 * 48000.0));
+
+            expect (ecartMax < 0.012 * 48000.0, "coups tous les 0,6 s, écart max " + juce::String (ecartMax / 48.0, 1) + " ms");
+
+            // Le tempo change : la boucle est étirée de nouveau
+            moteur.modifier ([] (Morceau& x) { x.tempo = 150.0; });
+            moteur.attendreLesBoucles();
+            const auto* etiree = moteur.samplerDeLaVoix (0, 0)->getBoucleEtiree();
+            expect (etiree != nullptr && std::abs (etiree->audio.getNumSamples() - 1.6 * 48000.0) < 2.0, "à 150 : 1,6 s");
+        }
+
+        beginTest ("Push : Browse change la machine, choisit une boucle, les pages du sampler, les tranches au pas à pas"_fr);
+        {
+            using T = Evenement::Type;
+            CarteSimulee carte (engine, 2);
+            auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+            m.assurerScenes (8);
+            Moteur moteur (engine, m, &banqueEssai());
+            Surface surface;
+            Pilote pilote (moteur, surface);
+            auto bouton = [&] (Bouton b) { surface.recevoir ({ T::bouton, (int) b, 1, true }); surface.recevoir ({ T::bouton, (int) b, 0, false }); };
+            auto tourner = [&] (int encodeur, int pas) { surface.recevoir ({ T::encodeurTourne, encodeur, pas, false }); };
+
+            // Piste 3 (Nappe) choisie, Browse : on n'ouvre pas sur « Machine »
+            surface.recevoir ({ T::bouton, premierBoutonDuBas + 2, 1, true });
+            surface.recevoir ({ T::bouton, premierBoutonDuBas + 2, 0, false });
+            bouton (Bouton::browse);
+            expect (pilote.getPage() == Pilote::Page::browse);
+            tourner (0, 400);    // Machine, la dernière catégorie : Batterie, Synthé, Sampler
+            tourner (1, 16);
+            expect (moteur.getMorceau().pistes[2].estUnSampler(), "Browse, Machine : la piste devient un sampler");
+            expectEquals (moteur.getMorceau().pistes[2].nom, juce::String ("Sampler"), "elle prend le nom de sa machine");
+
+            // Catégorie Boucles (la première du sampler), le premier son : le mode passe en boucle, un clip de boucle est écrit
+            tourner (0, -400);
+            tourner (1, 8);
+            tourner (1, -8);
+            const auto& r = moteur.getMorceau().pistes[2].sampler;
+            expect (r.son.startsWith ("Boucles/"), "son choisi : " + r.son);
+            expect (r.mode == ModeSampler::boucle, "une boucle se joue en boucle");
+            const auto* clip = moteur.getMorceau().clip (2, 0);
+            expect (clip != nullptr && clip->nom == "Boucle" && clip->notes.size() == 1, "clip de boucle écrit");
+
+            if (clip != nullptr)
+                expectEquals (clip->longueurMesures, juce::roundToInt (moteur.secondesDeLaBoucle (2) / 2.0), "le clip a la longueur de la boucle");
+
+            // Device : page Sampler (8 réglages), puis Commun ; la hauteur se règle
+            bouton (Bouton::device);
+            expect (pilote.getPage() == Pilote::Page::sampler, "Device : page du sampler");
+            tourner (2, 50);
+            expectWithinAbsoluteError (moteur.getMorceau().pistes[2].sampler.hauteur, 5.0f, 0.01f, "encodeur 3 : hauteur");
+            bouton (Bouton::device);
+            expect (pilote.getPage() == Pilote::Page::communSampler, "boucle : pas de générateur, la page Commun");
+
+            // Mode découpé : pads en 4 sur 4, le pas à pas écrit la tranche 1
+            tourner (0, -8);
+            expect (moteur.getMorceau().pistes[2].sampler.mode == ModeSampler::decoupe, "mode découpé"_fr);
+            moteur.modifier ([] (Morceau& x) { x.scenes[0].clips[2].reset(); });
+            bouton (Bouton::note);
+            surface.recevoir (Evenement::pad (0, 1, 100));
+            surface.recevoir ({ T::pad, 1, 0, false });
+            expectEquals (pilote.getAnnonce().titre, juce::String ("Tranche 2"));
+            surface.recevoir (Evenement::pad (7, 0, 100));     // premier pas
+            clip = moteur.getMorceau().clip (2, 0);
+            expect (clip != nullptr && clip->notes.size() == 1 && clip->notes[0].hauteur == ReglagesSampler::premiereNote + 1, "pas à pas : tranche 2 sur le premier pas");
+
+            bouton (Bouton::device);
+            expect (pilote.getPage() == Pilote::Page::generateur, "découpé : le générateur rythmique"_fr);
+
+            // Un son glissé sur la fenêtre va au sampler de la piste choisie
+            pilote.sonsDeposes ({ "One-shots/Laser.wav" });
+            expectEquals (moteur.getMorceau().pistes[2].sampler.son, juce::String ("One-shots/Laser.wav"));
+
+            // Retour au synthé
+            bouton (Bouton::session);
+            bouton (Bouton::browse);
+            tourner (0, 400);    // jusqu'à « Machine »
+            tourner (1, -16);
+            tourner (1, 8);
+            expect (moteur.getMorceau().pistes[2].estUnSynthe(), "Machine : Synthé ; annonce : "_fr + pilote.getAnnonce().titre + " " + pilote.getAnnonce().valeur
+                    + ", son " + nomDuSon (moteur.getMorceau().pistes[2].son));
+            expectEquals (moteur.getMorceau().pistes[2].nom, nomDuSon (moteur.getMorceau().pistes[2].son));
+        }
+    }
+};
+
+
+//==============================================================================
+/** Hors série : un petit morceau fait seulement de samplers (et d'une grosse caisse), rendu dans Musique, groovebox,
+    pour l'écouter. Il lit les sons de départ du vrai dossier Sons, sans rien y écrire. */
+class EssaisEcouteSampler  : public juce::UnitTest
+{
+public:
+    EssaisEcouteSampler()  : juce::UnitTest ("Écoute du sampler"_fr, "groovebox-long") {}
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+        BanqueDeSons banque;    // le vrai dossier Sons
+
+        beginTest ("16 mesures de sampler : boucle étirée, tranches, corde et drone en notes, voix"_fr);
+
+        auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+        m.nom = "Écoute du sampler"_fr;
+        m.clic.actif = false;
+        m.assurerScenes (1);
+        m.delay.division = 2;
+        m.delay.retour = 0.55f;
+
+        auto sampler = [&] (int p, const juce::String& nom, const juce::String& son, ModeSampler mode, float volumeDb)
+        {
+            auto& piste = m.pistes[(size_t) p];
+            piste.son = SonProvisoire::sampler;
+            piste.nom = nom;
+            piste.sampler.son = son;
+            piste.sampler.mode = mode;
+            piste.volumeDb = volumeDb;
+            return &piste;
+        };
+
+        auto clip = [&] (int p, std::vector<Note> notes) { m.scenes[0].clips[(size_t) p] = Clip { m.pistes[(size_t) p].nom, 16, std::move (notes) }; };
+        constexpr double mesure = 4.0;
+
+        // Grosse caisse sur les temps, mesures 9 à 16
+        m.pistes[0].kit = kitsDeDepart::kit ("Hard techno");
+        m.pistes[0].volumeDb = 0.0f;
+        {
+            std::vector<Note> n;
+            for (int t = 8 * 4; t < 16 * 4; ++t)
+                n.push_back ({ (double) t, 0.25, Kit::premiereNote, 110 });
+            clip (0, n);
+        }
+
+        // Breakbeat à 100, étiré à 120 : mesures 5 à 16 ; à l'envers sur les deux dernières
+        sampler (1, "Boucle", "Boucles/Breakbeat 100.wav", ModeSampler::boucle, 3.0f);
+        {
+            std::vector<Note> n;
+            for (int b = 4; b < 16; b += 2)
+                n.push_back ({ b * mesure, 2 * mesure, 60, 100 });
+            clip (1, n);
+        }
+
+        // Jungle découpée : les tranches dans un autre ordre, mesures 9 à 16
+        sampler (2, "Tranches", "Boucles/Jungle 170.wav", ModeSampler::decoupe, 1.0f);
+        {
+            static constexpr int motif[16] = { 0, -1, 4, -1, 2, 2, -1, 6, 8, -1, 12, -1, 4, 13, 14, 15 };
+            std::vector<Note> n;
+            for (int b = 8; b < 16; ++b)
+                for (int k = 0; k < 16; ++k)
+                    if (motif[k] >= 0 && ! (b % 4 == 3 && k >= 12))
+                        n.push_back ({ b * mesure + k * 0.25, 0.25, ReglagesSampler::premiereNote + motif[k], 100 });
+            clip (2, n);
+        }
+
+        // Corde pincée en do : arpège de do mineur en croches
+        sampler (3, "Corde", "Textures/Corde en do.wav", ModeSampler::notes, -1.0f)->sampler.relache = 0.35f;
+        m.pistes[3].envoiReverbDb = -12.0f;
+        {
+            static constexpr int accords[4][4] = { { 60, 63, 67, 70 }, { 60, 63, 67, 72 }, { 56, 60, 63, 68 }, { 58, 62, 65, 70 } };
+            std::vector<Note> n;
+            for (int b = 0; b < 16; ++b)
+                for (int k = 0; k < 8; ++k)
+                {
+                    const auto& a = accords[b < 8 ? (b / 4) % 2 : (b < 12 ? 2 : 3)];
+                    n.push_back ({ b * mesure + k * 0.5, 0.45, a[(k * 3) % 4] + (k == 7 ? 12 : 0), 90 });
+                }
+            clip (3, n);
+        }
+
+        // Drone en do : notes tenues, attaque lente
+        {
+            auto* d = sampler (4, "Drone", "Textures/Drone en do.wav", ModeSampler::notes, -6.0f);
+            d->sampler.attaque = 0.55f;
+            d->sampler.relache = 0.6f;
+            d->sampler.filtre = -0.25f;
+            clip (4, { { 0.0, 8 * mesure, 48, 100 }, { 8 * mesure, 4 * mesure, 44, 100 }, { 12 * mesure, 4 * mesure, 46, 100 } });
+        }
+
+        // Voix : le décompte avant la boucle, « Allez » avant les tranches
+        sampler (5, "Décompte"_fr, "Voix/Un deux trois quatre.aiff", ModeSampler::unCoup, 4.0f);
+        clip (5, { { 3 * mesure, 1.0, 60, 110 } });
+        sampler (6, "Allez", "Voix/Allez.aiff", ModeSampler::unCoup, 4.0f);
+        m.pistes[6].envoiDelayDb = -10.0f;
+        clip (6, { { 7 * mesure + 3.0, 1.0, 60, 110 }, { 11 * mesure + 3.0, 1.0, 60, 110 } });
+
+        // Sirène dub dans le delay
+        sampler (7, "Sirène"_fr, "One-shots/Sirène dub.wav"_fr, ModeSampler::unCoup, -6.0f);
+        m.pistes[7].envoiDelayDb = -4.0f;
+        clip (7, { { 12 * mesure, 1.0, 60, 100 }, { 14 * mesure + 2.0, 1.0, 65, 100 } });
+
+        if (const auto seule = juce::SystemStats::getEnvironmentVariable ("PISTE_SEULE", {}); seule.isNotEmpty())
+            for (int p = 0; p < nombreDePistes; ++p)
+                m.pistes[(size_t) p].mute = p != seule.getIntValue();
+
+        CarteSimulee carte (engine, 2);
+        Moteur moteur (engine, m, &banque);
+        moteur.attendreLesBoucles();
+        moteur.lancerScene (0);
+        juce::AudioBuffer<float> tout (2, 0);
+
+        for (int k = 0; k < 4 * 35; ++k)
+        {
+            auto morceau = EssaisEnchainements::jouerEtAvancer (moteur, carte, uneSeconde / 4);
+            const int avant = tout.getNumSamples();
+            tout.setSize (2, avant + morceau.getNumSamples(), true, true);
+
+            for (int c = 0; c < 2; ++c)
+                tout.copyFrom (c, avant, morceau, c, 0, morceau.getNumSamples());
+        }
+
+        logMessage ("  crête "_fr + juce::String (juce::Decibels::gainToDecibels (tout.getMagnitude (0, tout.getNumSamples())), 1) + " dB");
+        expect (tout.getMagnitude (0, tout.getNumSamples()) < 0.95f, "sous la protection de sortie");
+        static const char* parties[] = { "Mesures 1-4 : corde et drone", "Mesures 5-8 : + boucle étirée", "Mesures 9-12 : + tranches, grosse caisse", "Mesures 13-16 : + sirène" };
+
+        for (int i = 0; i < 4; ++i)
+        {
+            const int debut = (int) (i * 8.0 * frequence) + 2400, fin = (int) ((i + 1) * 8.0 * frequence);
+            const float niveau = niveauEfficace (tout, 0, debut, fin);
+            logMessage ("  " + juce::String::fromUTF8 (parties[i]) + " : " + juce::String (juce::Decibels::gainToDecibels (niveau), 1) + " dB efficaces");
+            expect (niveau > 0.01f, juce::String::fromUTF8 (parties[i]) + " sonne");
+        }
+
+        const auto fichier = juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("groovebox").getChildFile ("Sampler (écoute).wav"_fr);
+        fichier.deleteFile();
+        juce::WavAudioFormat wav;
+
+        if (auto ecrivain = std::unique_ptr<juce::AudioFormatWriter> (wav.createWriterFor (new juce::FileOutputStream (fichier), frequence, 2, 24, {}, 0)))
+            ecrivain->writeFromAudioSampleBuffer (tout, 0, tout.getNumSamples());
+
+        logMessage ("  fichier : " + fichier.getFullPathName());
+    }
+};
+
 static EssaisModele essaisModele;
 static EssaisSorties essaisSorties;
 static EssaisHorloge essaisHorloge;
@@ -4596,6 +5178,8 @@ static EssaisRetouche essaisRetouche;
 static EssaisRejeu essaisRejeu;
 static EssaisRejeuLong essaisRejeuLong;
 static EssaisDemo2 essaisDemo2;
+static EssaisSampler essaisSampler;
+static EssaisEcouteSampler essaisEcouteSampler;
 
 } // namespace groovebox
 

@@ -49,7 +49,7 @@ namespace
 
         // Pistes de synthé : un son de Surge par défaut, avec ses macros de départ
         for (auto& p : m.pistes)
-            if (! p.estUneBatterie() && sonsDeSynthe::trouver (p.sonDeSynthe) == nullptr)
+            if (p.estUnSynthe() && sonsDeSynthe::trouver (p.sonDeSynthe) == nullptr)
             {
                 p.sonDeSynthe = sonsDeSynthe::sonParDefaut ((int) p.son);
 
@@ -69,12 +69,16 @@ Moteur::Moteur (te::Engine& e, Morceau depart, BanqueDeSons* banqueFournie)  : e
 
         if (const int n = fabriqueDeSons::assurerKitsDeDepart (banque->getRacine()); n > 0)
             juce::Logger::writeToLog ("Kits de départ fabriqués : "_fr + juce::String (n) + " sons dans " + banque->getRacine().getFullPathName());
+
+        if (const int n = fabriqueDeSons::assurerSonsDuSampler (banque->getRacine()); n > 0)
+            juce::Logger::writeToLog ("Sons du sampler fabriqués : "_fr + juce::String (n));
     }
 
     engine.getPluginManager().createBuiltInType<BipPlugin>();
     engine.getPluginManager().createBuiltInType<ClicPlugin>();
     engine.getPluginManager().createBuiltInType<InstrumentProvisoire>();
     engine.getPluginManager().createBuiltInType<BatteriePlugin>();
+    engine.getPluginManager().createBuiltInType<SamplerPlugin>();
     engine.getPluginManager().createBuiltInType<FiltrePlugin>();
     engine.getPluginManager().createBuiltInType<SaturationPlugin>();
     engine.getPluginManager().createBuiltInType<DelayDubPlugin>();
@@ -128,6 +132,7 @@ Moteur::Moteur (te::Engine& e, Morceau depart, BanqueDeSons* banqueFournie)  : e
             v->playSlotClips = true;
             pm.instruments[(size_t) k] = ajouterPlugin<InstrumentProvisoire> (*v, 0);
             pm.batteries[(size_t) k] = ajouterPlugin<BatteriePlugin> (*v, 1);
+            pm.samplers[(size_t) k] = ajouterPlugin<SamplerPlugin> (*v, 2);
 
             for (int e = 0; e < 2; ++e)
             {
@@ -207,6 +212,7 @@ Moteur::Moteur (te::Engine& e, Morceau depart, BanqueDeSons* banqueFournie)  : e
 
 Moteur::~Moteur()
 {
+    etireur.reset();
     arreterPrise();
     engine.getDeviceManager().deviceManager.removeAudioCallback (&entreeDesMicros);
     enregistrementAudio.reset();
@@ -273,6 +279,12 @@ void Moteur::appliquerDifferences (const Morceau& ancien)
 {
     if (morceau.tempo != ancien.tempo)
         appliquerTempo();
+
+    // Les boucles du sampler suivent le tempo et la mesure
+    if (morceau.tempo != ancien.tempo || morceau.mesure != ancien.mesure)
+        for (int p = 0; p < nombreDePistes; ++p)
+            if (morceau.pistes[(size_t) p].estUnSampler() && ancien.pistes[(size_t) p] == morceau.pistes[(size_t) p])
+                appliquerSampler (p);
 
     if (morceau.mesure != ancien.mesure)
     {
@@ -640,7 +652,7 @@ void Moteur::lancerLaSection (int i, double debut)
         else
             for (int p = 0; p < nombreDePistes; ++p)
                 if (! r.reprises[(size_t) p] && morceau.clip (p, s.scene) != nullptr
-                     && pisteAChanger (p, s.scene, s.entree->coupeNette (morceau.pistes[(size_t) p].estUneBatterie())))
+                     && pisteAChanger (p, s.scene, s.entree->coupeNette (morceau.pistes[(size_t) p].jouePads())))
                     lancerClip (p, s.scene, *s.entree);
 
         for (int p = 0; p < nombreDePistes; ++p)
@@ -913,8 +925,8 @@ void Moteur::appliquerPistes (const Morceau& ancien, bool tout)
 
         pm.dossier->setName (p.nom);
 
-        // Batterie, Surge XT ou synthé provisoire : un seul est actif ; les notes traversent ceux qui sont éteints
-        const bool batterie = p.estUneBatterie();
+        // Batterie, sampler, Surge XT ou synthé provisoire : un seul est actif ; les notes traversent ceux qui sont éteints
+        const bool batterie = p.estUneBatterie(), sampler = p.estUnSampler();
         const auto* son = sonsDeSynthe::trouver (p.sonDeSynthe);
 
         for (int k = 0; k < 2; ++k)
@@ -922,7 +934,7 @@ void Moteur::appliquerPistes (const Morceau& ancien, bool tout)
             bool surgePret = false;
 
             // Un Surge par voix, avec les mêmes réglages : celui de la voix libre se repose
-            if (! batterie && son != nullptr && surge::trouver (engine))
+            if (p.estUnSynthe() && son != nullptr && surge::trouver (engine))
             {
                 const bool nouveau = pm.surges[(size_t) k] == nullptr;
 
@@ -949,12 +961,18 @@ void Moteur::appliquerPistes (const Morceau& ancien, bool tout)
             }
 
             pm.instruments[(size_t) k]->son = (int) p.son;
-            pm.instruments[(size_t) k]->setEnabled (! batterie && ! surgePret);
+            pm.instruments[(size_t) k]->setEnabled (p.estUnSynthe() && ! surgePret);
             pm.batteries[(size_t) k]->setEnabled (batterie);
+            pm.samplers[(size_t) k]->setEnabled (sampler);
 
             if (batterie && (tout || ! (p.kit == a.kit) || p.son != a.son))
                 pm.batteries[(size_t) k]->appliquerKit (p.kit, *banque);
         }
+
+        if (sampler && (tout || ! (p.sampler == a.sampler) || p.son != a.son))
+            appliquerSampler (i);
+        else if (! sampler && a.estUnSampler())
+            etireur->annuler (i);
 
         appliquerSurges (i);
         appliquerEffets (i, ancien, tout);
@@ -966,6 +984,46 @@ void Moteur::appliquerPistes (const Morceau& ancien, bool tout)
         pm.dossier->setMute (p.mute);
         pm.dossier->setSolo (p.solo);
     }
+}
+
+double Moteur::secondesDeLaBoucle (int piste) const
+{
+    const auto& r = morceau.pistes[(size_t) piste].sampler;
+    const auto* son = banque->charger (r.son);
+
+    if (son == nullptr)
+        return 2.0;
+
+    const auto [d, f] = r.partieJouee();
+    const double secondesDeLaPartie = (f - d) * son->audio.getNumSamples() / son->frequence;
+    const int mesures = sampler::mesuresDeLaBoucle (r, secondesDeLaPartie, morceau.tempo, morceau.mesure);
+    const double noiresParMesure = morceau.mesure.numerateur * 4.0 / juce::jmax (1, morceau.mesure.denominateur);
+    return mesures * noiresParMesure * 60.0 / morceau.tempo;
+}
+
+void Moteur::appliquerSampler (int piste)
+{
+    auto& pm = pistesMoteur[(size_t) piste];
+    const auto& r = morceau.pistes[(size_t) piste].sampler;
+    const auto* son = banque->charger (r.son);
+    const double secondes = secondesDeLaBoucle (piste);
+
+    for (auto* s : pm.samplers)
+        s->appliquer (r, son, secondes);
+
+    if (r.mode != ModeSampler::boucle || son == nullptr)
+    {
+        etireur->annuler (piste);
+        return;
+    }
+
+    // Boucle : étirée au tempo sur un fil à part ; en attendant, le son d'origine est lu accéléré ou ralenti
+    const auto [d, f] = r.partieJouee();
+    EtireurDeBoucles::Demande demande { son, d, f, secondes, r.hauteur, { pm.samplers[0], pm.samplers[1] } };
+
+    if (etireur->demander (piste, std::move (demande)))
+        for (auto* s : pm.samplers)
+            s->installerBoucle (nullptr);
 }
 
 void Moteur::assurerCases()
@@ -1501,7 +1559,7 @@ void Moteur::lancerScene (int scene, std::optional<Enchainement> choisi)
 
     for (int p = 0; p < nombreDePistes; ++p)
         if (morceau.clip (p, scene) != nullptr        // une case vide laisse la piste continuer
-             && (! joue || pisteAChanger (p, scene, e.coupeNette (morceau.pistes[(size_t) p].estUneBatterie()))))
+             && (! joue || pisteAChanger (p, scene, e.coupeNette (morceau.pistes[(size_t) p].jouePads()))))
             lancerClip (p, scene, e);
 }
 
@@ -1729,7 +1787,7 @@ void Moteur::enchainer (int piste, int scene, const Enchainement& e, bool aLaMai
         return;
 
     auto& t = enchainements[(size_t) piste];
-    const bool batterie = morceau.pistes[(size_t) piste].estUneBatterie();
+    const bool batterie = morceau.pistes[(size_t) piste].jouePads();
     const bool nette = ! aLaMain && e.coupeNette (batterie);
     const double maintenant = tempsActuel() + margeDuFilPrincipal();
 
@@ -1900,7 +1958,7 @@ void Moteur::appliquerSurges (int piste)
     // Le Surge de la voix libre se repose ; pendant un enchaînement, les deux jouent
     auto& pm = pistesMoteur[(size_t) piste];
     const auto& p = morceau.pistes[(size_t) piste];
-    const bool synthe = ! p.estUneBatterie() && sonsDeSynthe::trouver (p.sonDeSynthe) != nullptr;
+    const bool synthe = p.estUnSynthe() && sonsDeSynthe::trouver (p.sonDeSynthe) != nullptr;
 
     for (int k = 0; k < 2; ++k)
         if (auto& s = pm.surges[(size_t) k]; s != nullptr && pm.pilotesSurge[(size_t) k] != nullptr)

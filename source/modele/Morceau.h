@@ -7,6 +7,7 @@
 #include "Melodies.h"
 #include "Effets.h"
 #include "Enchainements.h"
+#include "Sampler.h"
 
 namespace groovebox
 {
@@ -61,7 +62,7 @@ struct Clip
 };
 
 /** Son provisoire d'une piste, en attendant les vraies machines (étapes 5 et 6). */
-enum class SonProvisoire { batterie, basse, nappe, lead, arpege, percussions, stab, texture };
+enum class SonProvisoire { batterie, basse, nappe, lead, arpege, percussions, stab, texture, sampler };
 juce::String nomDuSon (SonProvisoire);
 
 struct Piste
@@ -76,9 +77,15 @@ struct Piste
     std::array<std::optional<Effet>, 3> effets;     ///< Effets d'insertion
     float envoiDelayDb = -60.0f, envoiReverbDb = -60.0f;  ///< Envois vers les effets de départ (-60 : coupé)
     juce::String sonDeSynthe;       ///< Son de Surge XT (pistes de synthé), par son nom
-    std::array<float, 8> macros { 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };                        ///< Utilisé quand le son est Batterie ou Percussions
+    std::array<float, 8> macros { 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f };
+    ReglagesSampler sampler;        ///< Utilisé quand le son est Sampler                        ///< Utilisé quand le son est Batterie ou Percussions
 
     bool estUneBatterie() const     { return son == SonProvisoire::batterie || son == SonProvisoire::percussions; }
+    bool estUnSampler() const       { return son == SonProvisoire::sampler; }
+    bool estUnSynthe() const        { return ! estUneBatterie() && ! estUnSampler(); }
+
+    /** Pads en 4 sur 4, pas à pas et générateur rythmique : batterie, ou sampler découpé. */
+    bool jouePads() const           { return estUneBatterie() || (estUnSampler() && sampler.mode == ModeSampler::decoupe); }
     bool operator== (const Piste&) const = default;
 };
 

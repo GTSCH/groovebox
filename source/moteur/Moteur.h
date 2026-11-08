@@ -4,6 +4,7 @@
 #include "ClicPlugin.h"
 #include "InstrumentProvisoire.h"
 #include "BatteriePlugin.h"
+#include "SamplerPlugin.h"
 #include "SonsDeSynthe.h"
 #include "EffetsMaison.h"
 #include "VoixPlugin.h"
@@ -132,6 +133,11 @@ public:
 
     BanqueDeSons& getBanque()                   { return *banque; }
 
+    /** Sampler : durée de la boucle au tempo du morceau ; attendre que les boucles soient étirées (essais). */
+    double secondesDeLaBoucle (int piste) const;
+    void attendreLesBoucles()                   { etireur->attendre(); }
+    const SamplerPlugin* samplerDeLaVoix (int piste, int voix) const   { return pistesMoteur[(size_t) piste].samplers[(size_t) voix]; }
+
     /** Envoi momentané : tant que c'est tenu, la piste part à fond dans le delay dub. */
     void envoiMomentane (int piste, bool tenu);
     bool envoiMomentaneTenu (int piste) const          { return momentanes[(size_t) piste]; }
@@ -229,6 +235,7 @@ private:
     BanqueDeSons* banque = nullptr;
     Morceau morceau;
     std::unique_ptr<te::Edit> edit;
+    std::unique_ptr<EtireurDeBoucles> etireur = std::make_unique<EtireurDeBoucles>();   ///< Détruit avant le moteur audio
     te::AudioTrack* pistePrincipale = nullptr;
     te::AudioTrack* pisteCasque = nullptr;
     BipPlugin* bipPrincipal = nullptr;
@@ -252,6 +259,7 @@ private:
         std::array<te::AudioTrack*, 2> voix {};
         std::array<InstrumentProvisoire*, 2> instruments {};
         std::array<BatteriePlugin*, 2> batteries {};
+        std::array<SamplerPlugin*, 2> samplers {};
         std::array<te::Plugin::Ptr, 2> surges;                      ///< Surge XT, s'il est installé (pistes de synthé)
         std::array<te::Plugin::Ptr, 3> effets;                      ///< Effets d'insertion, avant le volume
         std::array<std::optional<TypeEffet>, 3> typesDesEffets;
@@ -385,6 +393,7 @@ private:
 
     void appliquerDifferences (const Morceau& ancien);
     void appliquerPistes (const Morceau& ancien, bool tout);
+    void appliquerSampler (int piste);
     void appliquerCases (const Morceau& ancien, bool tout);
     void appliquerCase (int piste, int scene);
     void assurerCases();

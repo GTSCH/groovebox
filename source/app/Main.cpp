@@ -145,6 +145,7 @@ public:
 
 private:
     bool sauvegardeEnAttente = false;
+    bool chargementEnCours = false;
 
     void demarrerLeJeu()
     {
@@ -163,6 +164,7 @@ private:
         actions.demo = [this] { ouvrirLaDemo(); };
         actions.demo2 = [this] { ouvrirLaDemo2(); };
         actions.ouvrirSimulateur = [this] { ouvrirLeSimulateur(); };
+        actions.deposerDesSons = [this] (const juce::StringArray& fichiers) { pilote->sonsDeposes (moteur->getBanque().importer (fichiers)); };
 
         fenetre = std::make_unique<Fenetre> (*engine, *moteur, std::move (actions), [this] { return etatDuPush(); });
 
@@ -196,7 +198,11 @@ private:
     {
         moteur->deroulePourPlay.reset();    // un autre morceau : Play redevient la lecture habituelle
         sauvegarder();
+
+        // Le moteur annonce le changement de morceau : ce n'est pas un changement de nom, le dossier d'avant ne bouge pas
+        chargementEnCours = true;
         moteur->chargerMorceau (m);
+        chargementEnCours = false;
         dossierCourant = moteur->getMorceau().nom;
         bibliotheque->retenirDernier (dossierCourant);
         sauvegarder();
@@ -250,8 +256,8 @@ private:
     {
         const auto& nom = moteur->getMorceau().nom;
 
-        // Pendant le diagnostic (qui peut charger la démo), les morceaux enregistrés ne bougent pas
-        if (nom == dossierCourant || diagnosticEnCours)
+        // Pendant un chargement ou le diagnostic (qui peut charger la démo), les morceaux enregistrés ne bougent pas
+        if (nom == dossierCourant || diagnosticEnCours || chargementEnCours)
             return;
 
         if (bibliotheque->renommer (dossierCourant, nom))

@@ -341,6 +341,52 @@ Pilote::Pilote (Moteur& m, Surface& s)  : moteur (m), surface (s)
                       [this] { const auto s = sonsDeLaCategorie(); return s.size() < 2 ? 0.0f : (float) sonChoisi / (float) (s.size() - 1); },
                       [this] (int pas, bool) { if (auto c = crantsDiscrets (1, pas)) { sonChoisi = juce::jlimit (0, juce::jmax (0, sonsDeLaCategorie().size() - 1), sonChoisi + c); choisirDansLeNavigateur(); } }, actif };
 
+    // Page Sampler : la partie jouée du son, sa hauteur, son filtre, son enveloppe
+    auto smp = [this] () -> const ReglagesSampler& { return moteur.getMorceau().pistes[(size_t) pisteChoisie].sampler; };
+    auto continuSampler = [this] (int encodeur, float minimum, float maximum, std::function<float& (ReglagesSampler&)> champ, float pasFin, float pasNormal)
+    {
+        return [=, this] (int pas, bool fin) { modifierSampler (encodeur, [=] (ReglagesSampler& r) { auto& v = champ (r); v = juce::jlimit (minimum, maximum, v + (float) pas * (fin ? pasFin : pasNormal)); }); };
+    };
+
+    pageSampler[0] = { "Début"_fr, [smp, pourcent] { return pourcent (smp().debut); }, [smp] { return smp().debut; },
+                       continuSampler (0, 0.0f, 0.99f, [] (ReglagesSampler& r) -> float& { return r.debut; }, 0.0005f, 0.003f), actif };
+    pageSampler[1] = { "Longueur", [smp, pourcent] { return pourcent (smp().longueur); }, [smp] { return smp().longueur; },
+                       continuSampler (1, 0.01f, 1.0f, [] (ReglagesSampler& r) -> float& { return r.longueur; }, 0.0005f, 0.003f), actif };
+    pageSampler[2] = { "Hauteur", [smp] { const auto h = smp().hauteur; return (h > 0.04f ? "+" : "") + juce::String (h, 1).replaceCharacter ('.', ',') + " dt"; },
+                       [smp] { return (smp().hauteur + 24.0f) / 48.0f; },
+                       continuSampler (2, -24.0f, 24.0f, [] (ReglagesSampler& r) -> float& { return r.hauteur; }, 0.01f, 0.1f), actif };
+    pageSampler[3] = { "Filtre", [smp] { const auto f = smp().filtre; return std::abs (f) < 0.01f ? juce::String ("Neutre") : (f < 0 ? "Passe-bas " : "Passe-haut ") + juce::String (juce::roundToInt (std::abs (f) * 100.0f)); },
+                       [smp] { return (smp().filtre + 1.0f) / 2.0f; },
+                       continuSampler (3, -1.0f, 1.0f, [] (ReglagesSampler& r) -> float& { return r.filtre; }, 0.002f, 0.01f), actif };
+    pageSampler[4] = { "Attaque", [smp] { const auto s = smp().attaqueEnSecondes(); return s <= 0.0 ? juce::String ("Directe") : s < 1.0 ? juce::String (juce::roundToInt (s * 1000.0)) + " ms" : juce::String (s, 2).replaceCharacter ('.', ',') + " s"; },
+                       [smp] { return smp().attaque; },
+                       continuSampler (4, 0.0f, 1.0f, [] (ReglagesSampler& r) -> float& { return r.attaque; }, 0.002f, 0.01f), actif };
+    pageSampler[5] = { "Relâche"_fr, [smp] { const auto s = smp().relacheEnSecondes(); return s < 1.0 ? juce::String (juce::roundToInt (s * 1000.0)) + " ms" : juce::String (s, 2).replaceCharacter ('.', ',') + " s"; },
+                       [smp] { return smp().relache; },
+                       continuSampler (5, 0.0f, 1.0f, [] (ReglagesSampler& r) -> float& { return r.relache; }, 0.002f, 0.01f), actif };
+    pageSampler[6] = { "À l'envers"_fr, [smp] { return smp().envers ? juce::String ("Oui") : juce::String ("Non"); }, [smp] { return smp().envers ? 1.0f : 0.0f; },
+                       [this] (int pas, bool) { if (auto c = crantsDiscrets (6, pas)) modifierSampler (6, [=] (ReglagesSampler& r) { r.envers = c > 0; }); }, actif };
+    pageSampler[7] = { "Volume", [smp] { return formaterDb (smp().volumeDb); }, [smp] { return (smp().volumeDb + 40.0f) / 46.0f; },
+                       continuSampler (7, -40.0f, 6.0f, [] (ReglagesSampler& r) -> float& { return r.volumeDb; }, 0.05f, 0.25f), premier };
+
+    // Page Commun du sampler : mode, longueur de la boucle, swing de la piste, longueur du clip
+    pageCommunSampler[0] = { "Mode", [smp] { return nomDuModeSampler (smp().mode); }, [smp] { return (float) smp().mode / (float) (nombreDeModesSampler - 1); },
+                             [this] (int pas, bool) { if (auto c = crantsDiscrets (0, pas)) {
+                                 modifierSampler (0, [=] (ReglagesSampler& r) { r.mode = (ModeSampler) juce::jlimit (0, nombreDeModesSampler - 1, (int) r.mode + c); });
+                                 preparerClipDeBoucle(); } }, premier };
+    pageCommunSampler[1] = { "Boucle", [this, smp] { return smp().mesuresDeBoucle > 0 ? nomDeLaDuree (smp().mesuresDeBoucle)
+                                                                                        : "Auto (" + juce::String (juce::roundToInt (moteur.secondesDeLaBoucle (pisteChoisie) * moteur.getMorceau().tempo / 60.0
+                                                                                                                                      * moteur.getMorceau().mesure.denominateur / 4.0 / juce::jmax (1, moteur.getMorceau().mesure.numerateur))) + ")"; },
+                             [smp] { return (float) smp().mesuresDeBoucle / 16.0f; },
+                             [this] (int pas, bool) { if (auto c = crantsDiscrets (1, pas)) {
+                                 modifierSampler (1, [=] (ReglagesSampler& r) {
+                                     static constexpr int choix[] = { 0, 1, 2, 4, 8, 16 };
+                                     int i = 0; while (i < 5 && choix[i] != r.mesuresDeBoucle) ++i;
+                                     r.mesuresDeBoucle = choix[juce::jlimit (0, 5, i + c)]; });
+                                 preparerClipDeBoucle(); } }, actif };
+    pageCommunSampler[2] = pageCommun[0];
+    pageCommunSampler[3] = pageCommun[4];
+
     surface.surEvenement = [this] (const Evenement& e) { traiter (e); };
     rafraichir();
     startTimerHz (60);
@@ -389,6 +435,17 @@ void Pilote::pageSuivanteDeDevice()
 
     if (p.estUneBatterie())
         pages = { { Page::device, 0 }, { Page::generateur, 0 }, { Page::commun, 0 } };
+    else if (p.estUnSampler())
+    {
+        pages = { { Page::sampler, 0 } };
+
+        if (p.sampler.mode == ModeSampler::decoupe)
+            pages.push_back ({ Page::generateur, 0 });
+        else if (p.sampler.mode != ModeSampler::boucle)
+            pages.push_back ({ Page::melodie, 0 });
+
+        pages.push_back ({ Page::communSampler, 0 });
+    }
     else
         pages = { { Page::macros, 0 }, { Page::melodie, 0 }, { Page::communSynthe, 0 } };
 
@@ -543,6 +600,172 @@ bool Pilote::pisteChoisieEstUneBatterie() const
     return moteur.getMorceau().pistes[(size_t) pisteChoisie].estUneBatterie();
 }
 
+bool Pilote::pisteChoisieEstUnSampler() const
+{
+    return moteur.getMorceau().pistes[(size_t) pisteChoisie].estUnSampler();
+}
+
+bool Pilote::pisteChoisieEstUnSynthe() const
+{
+    return moteur.getMorceau().pistes[(size_t) pisteChoisie].estUnSynthe();
+}
+
+bool Pilote::pisteChoisieJouePads() const
+{
+    return moteur.getMorceau().pistes[(size_t) pisteChoisie].jouePads();
+}
+
+void Pilote::modifierSampler (int encodeur, std::function<void (ReglagesSampler&)> f)
+{
+    if (! pisteChoisieEstUnSampler())
+        return;
+
+    moteur.modifier ([=, p = pisteChoisie] (Morceau& m) { f (m.pistes[(size_t) p].sampler); }, "sampler " + juce::String (encodeur));
+}
+
+void Pilote::preparerClipDeBoucle()
+{
+    // Une boucle joue tant que sa note est tenue : le clip est une seule note, de la longueur de la boucle.
+    // On l'écrit dans la case visée si elle est vide ou si c'est déjà un clip de boucle.
+    if (! pisteChoisieEstUnSampler() || moteur.getMorceau().pistes[(size_t) pisteChoisie].sampler.mode != ModeSampler::boucle)
+        return;
+
+    const auto& morceau = moteur.getMorceau();
+    const double secondesParMesure = morceau.mesure.numerateur * 4.0 / juce::jmax (1, morceau.mesure.denominateur) * 60.0 / morceau.tempo;
+    const int mesures = juce::jlimit (1, 16, juce::roundToInt (moteur.secondesDeLaBoucle (pisteChoisie) / secondesParMesure));
+    auto cible = caseDuPasAPas();
+    const int scene = cible ? cible->second : (caseChoisie && caseChoisie->first == pisteChoisie ? caseChoisie->second : 0);
+    const auto* clip = morceau.clip (pisteChoisie, scene);
+
+    if (clip != nullptr && clip->nom != "Boucle")
+        return;
+
+    moteur.modifier ([=, p = pisteChoisie] (Morceau& m)
+    {
+        m.assurerScenes (scene + 1);
+        const double longueur = (double) mesures * m.mesure.numerateur;
+        m.scenes[(size_t) scene].clips[(size_t) p] = Clip { "Boucle", mesures, { { 0.0, longueur, ReglagesSampler::noteDeBase, 100 } } };
+    }, "clip de boucle");
+
+    caseChoisie = std::pair { pisteChoisie, scene };
+}
+
+void Pilote::changerDeMachine (const juce::String& machine)
+{
+    moteur.modifier ([=, p = pisteChoisie] (Morceau& m)
+    {
+        auto& piste = m.pistes[(size_t) p];
+        const auto ancienNom = nomDuSon (piste.son);
+        const auto depart = Morceau::pistesDeDepart()[(size_t) p].son;
+
+        if (machine == "Batterie")
+        {
+            piste.son = SonProvisoire::batterie;
+
+            if (piste.kit.nom.isEmpty())
+                piste.kit = kitsDeDepart::kit ("Analogique");
+        }
+        else if (machine == "Sampler")
+        {
+            piste.son = SonProvisoire::sampler;
+        }
+        else
+        {
+            piste.son = depart == SonProvisoire::batterie || depart == SonProvisoire::percussions || depart == SonProvisoire::sampler ? SonProvisoire::basse : depart;
+            piste.sonDeSynthe = sonsDeSynthe::sonParDefaut ((int) piste.son);
+
+            if (auto son = sonsDeSynthe::trouver (piste.sonDeSynthe))
+                for (int k = 0; k < 8; ++k)
+                    piste.macros[(size_t) k] = son->macros[(size_t) k].depart;
+        }
+
+        // Une piste qui portait le nom de sa machine prend celui de la nouvelle
+        if (piste.nom == ancienNom)
+            piste.nom = nomDuSon (piste.son);
+    }, "machine");
+}
+
+void Pilote::ouvrirLeNavigateur()
+{
+    const auto& piste = moteur.getMorceau().pistes[(size_t) pisteChoisie];
+
+    if (piste.estUneBatterie())
+    {
+        categoriesDuNavigateur = moteur.getBanque().categories();
+        categoriesDuNavigateur.insert (0, "Kits");
+    }
+    else if (piste.estUnSampler())
+    {
+        // Les dossiers du sampler d'abord, puis ceux de la batterie
+        categoriesDuNavigateur.clear();
+        const auto toutes = moteur.getBanque().categories();
+
+        for (auto& c : sampler::categoriesDuSampler())
+            if (toutes.contains (c))
+                categoriesDuNavigateur.add (c);
+
+        for (auto& c : toutes)
+            categoriesDuNavigateur.addIfNotAlreadyThere (c);
+    }
+    else
+    {
+        categoriesDuNavigateur = sonsDeSynthe::styles();
+    }
+
+    // « Machine » en dernier : on n'y arrive pas par mégarde en remontant les catégories
+    categoriesDuNavigateur.add ("Machine");
+
+    // On ouvre sur la catégorie du son en place, jamais sur Machine
+    if (piste.estUnSampler() && piste.sampler.son.isNotEmpty())
+        categorieChoisie = juce::jmax (0, categoriesDuNavigateur.indexOf (piste.sampler.son.upToFirstOccurrenceOf ("/", false, false)));
+
+    categorieChoisie = juce::jlimit (0, juce::jmax (0, categoriesDuNavigateur.size() - 2), categorieChoisie);
+    sonChoisi = 0;
+}
+
+void Pilote::sonsDeposes (const juce::StringArray& chemins)
+{
+    if (chemins.isEmpty())
+    {
+        annoncer ("Sons", "Aucun fichier son lisible"_fr);
+        return;
+    }
+
+    if (! pisteChoisieEstUnSampler())
+    {
+        annoncer (juce::String (chemins.size()) + (chemins.size() > 1 ? " sons ajoutés"_fr : " son ajouté"_fr),
+                  "Dans Mes sons : Browse sur une piste Sampler"_fr);
+        return;
+    }
+
+    const auto chemin = chemins[0];
+    moteur.modifier ([=, p = pisteChoisie] (Morceau& m)
+    {
+        auto& r = m.pistes[(size_t) p].sampler;
+        r.son = chemin;
+        r.debut = 0.0f;
+        r.longueur = 1.0f;
+        r.mesuresDeBoucle = 0;
+    }, "son déposé");
+
+    preparerClipDeBoucle();
+    preecouterLeSampler();
+    annoncer (moteur.getMorceau().pistes[(size_t) pisteChoisie].nom, juce::File (chemin).getFileNameWithoutExtension());
+}
+
+void Pilote::preecouterLeSampler()
+{
+    const auto& r = moteur.getMorceau().pistes[(size_t) pisteChoisie].sampler;
+    const int note = r.mode == ModeSampler::decoupe ? ReglagesSampler::premiereNote : ReglagesSampler::noteDeBase;
+    const int duree = r.mode == ModeSampler::boucle ? juce::roundToInt (moteur.secondesDeLaBoucle (pisteChoisie) * 1000.0) : 1500;
+    moteur.jouerNote (pisteChoisie, note, 110);
+    juce::Timer::callAfterDelay (duree, [vie = std::weak_ptr<bool> (vivant), this, piste = pisteChoisie, note]
+    {
+        if (! vie.expired())
+            moteur.relacherNote (piste, note);
+    });
+}
+
 void Pilote::modifierPad (int encodeur, std::function<void (PadBatterie&)> f)
 {
     if (! pisteChoisieEstUneBatterie())
@@ -556,7 +779,10 @@ juce::StringArray Pilote::sonsDeLaCategorie() const
 {
     const auto categorie = categoriesDuNavigateur[categorieChoisie];
 
-    if (! pisteChoisieEstUneBatterie())
+    if (categorie == "Machine")
+        return { "Batterie", "Synthé"_fr, "Sampler" };
+
+    if (pisteChoisieEstUnSynthe())
         return sonsDeSynthe::sonsDuStyle (categorie);
 
     if (categorie == "Kits")
@@ -581,7 +807,51 @@ void Pilote::choisirDansLeNavigateur()
 {
     const auto sons = sonsDeLaCategorie();
 
-    if (! pisteChoisieEstUneBatterie())
+    if (categoriesDuNavigateur[categorieChoisie] == "Machine")
+    {
+        if (sons[sonChoisi].isNotEmpty())
+        {
+            changerDeMachine (sons[sonChoisi]);
+            // Les catégories changent avec la machine : on reste sur « Machine », la dernière
+            const int gardeSon = sonChoisi;
+            ouvrirLeNavigateur();
+            categorieChoisie = categoriesDuNavigateur.size() - 1;
+            sonChoisi = gardeSon;
+            annoncer ("Machine", sons[sonChoisi]);
+        }
+
+        return;
+    }
+
+    if (pisteChoisieEstUnSampler())
+    {
+        if (sons.isEmpty())
+            return;
+
+        const auto choix = sons[sonChoisi];
+        const auto categorie = categoriesDuNavigateur[categorieChoisie];
+
+        moteur.modifier ([=, p = pisteChoisie] (Morceau& m)
+        {
+            auto& r = m.pistes[(size_t) p].sampler;
+            r.son = choix;
+            r.debut = 0.0f;
+            r.longueur = 1.0f;
+            r.mesuresDeBoucle = 0;
+
+            // Une boucle se joue en boucle ; en quittant les boucles, on reprend le mode du dossier
+            if (categorie == "Boucles")
+                r.mode = ModeSampler::boucle;
+            else if (r.mode == ModeSampler::boucle)
+                r.mode = sampler::modePourLaCategorie (categorie);
+        }, "navigateur");
+
+        preparerClipDeBoucle();
+        preecouterLeSampler();
+        return;
+    }
+
+    if (pisteChoisieEstUnSynthe())
     {
         if (sons.isEmpty())
             return;
@@ -698,7 +968,9 @@ void Pilote::appuyerPadDeNote (int ligne, int colonne, int velocite)
         padsAppuyes[(size_t) pad] = true;
         moteur.jouerNote (pisteChoisie, Kit::premiereNote + pad, tenu (Bouton::accent) ? 127 : velocite);
 
-        if (nouveau)
+        if (nouveau && pisteChoisieEstUnSampler())
+            annoncer ("Tranche " + juce::String (pad + 1), juce::File (moteur.getMorceau().pistes[(size_t) pisteChoisie].sampler.son).getFileNameWithoutExtension());
+        else if (nouveau)
             annoncer (kitsDeDepart::nomsDesPads()[(size_t) pad], juce::File (moteur.getMorceau().pistes[(size_t) pisteChoisie].kit.pads[(size_t) pad].son).getFileNameWithoutExtension());
 
         return;
@@ -714,7 +986,7 @@ void Pilote::traiter (const Evenement& e)
     switch (e.type)
     {
         case Evenement::Type::pad:
-            if (mode == Mode::note && ! pisteChoisieEstUneBatterie())
+            if (mode == Mode::note && ! pisteChoisieJouePads())
             {
                 // Jeu en gamme : chaque pad garde la note qu'il a lancée, même si l'octave change entre-temps
                 auto& tenue = notesTenues[(size_t) e.numero];
@@ -1186,23 +1458,23 @@ void Pilote::appuyer (int bouton)
             return;
 
         case Bouton::note:
-            if (pisteChoisieEstUneBatterie())
+            if (pisteChoisieJouePads())
             {
                 mode = Mode::note;
-                page = Page::device;
-                annoncer ("Note", "Batterie : pads en bas à gauche, pas à pas en haut"_fr);
+                page = pisteChoisieEstUnSampler() ? Page::sampler : Page::device;
+                annoncer ("Note", pisteChoisieEstUnSampler() ? "Tranches : pads en bas à gauche, pas à pas en haut"_fr : "Batterie : pads en bas à gauche, pas à pas en haut"_fr);
             }
             else
             {
                 mode = Mode::note;
-                page = Page::device;
+                page = pisteChoisieEstUnSampler() ? Page::sampler : Page::device;
                 annoncer ("Note", moteur.getMorceau().gamme.nom() + ", octave " + juce::String (octaves[(size_t) pisteChoisie]));
             }
             return;
 
         case Bouton::octaveHaut:
         case Bouton::octaveBas:
-            if (mode == Mode::note && ! pisteChoisieEstUneBatterie())
+            if (mode == Mode::note && ! pisteChoisieJouePads())
             {
                 auto& o = octaves[(size_t) pisteChoisie];
                 o = juce::jlimit (0, 7, o + ((Bouton) bouton == Bouton::octaveHaut ? 1 : -1));
@@ -1238,6 +1510,16 @@ void Pilote::appuyer (int bouton)
                 return;
             }
 
+            if (pisteChoisieEstUnSampler())
+            {
+                const auto& r = morceau.pistes[(size_t) pisteChoisie].sampler;
+                annoncer ("Device", page == Page::sampler ? (r.son.isEmpty() ? juce::String ("Aucun son : Browse pour en choisir un") : juce::File (r.son).getFileNameWithoutExtension() + ", " + nomDuModeSampler (r.mode).toLowerCase())
+                                  : page == Page::generateur ? "Générateur "_fr + (generateurVise() ? nomDuMoteur (generateurVise()->moteur) : juce::String ("(le clip deviendra généré)"_fr))
+                                  : page == Page::melodie ? "Mélodie "_fr + (melodieVisee() ? nomDuStyle (melodieVisee()->style) : juce::String ("(le clip deviendra généré)"_fr))
+                                                          : juce::String ("Mode, boucle, swing, longueur"));
+                return;
+            }
+
             if (! pisteChoisieEstUneBatterie())
             {
                 annoncer ("Device", page == Page::macros ? morceau.pistes[(size_t) pisteChoisie].sonDeSynthe + (moteur.joueAvecSurge (pisteChoisie) ? juce::String() : juce::String (" (Surge XT absent : son provisoire)"))
@@ -1259,20 +1541,9 @@ void Pilote::appuyer (int bouton)
                 return;
             }
 
-            if (pisteChoisieEstUneBatterie())
-            {
-                categoriesDuNavigateur = moteur.getBanque().categories();
-                categoriesDuNavigateur.insert (0, "Kits");
-            }
-            else
-            {
-                categoriesDuNavigateur = sonsDeSynthe::styles();
-            }
-
-            categorieChoisie = juce::jlimit (0, juce::jmax (0, categoriesDuNavigateur.size() - 1), categorieChoisie);
-            sonChoisi = 0;
+            ouvrirLeNavigateur();
             page = Page::browse;
-            annoncer ("Browse", pisteChoisieEstUneBatterie() ? "Encodeur 1 : catégorie ; encodeur 2 : son"_fr : juce::String ("Encodeur 1 : style ; encodeur 2 : son"));
+            annoncer ("Browse", pisteChoisieEstUnSynthe() ? juce::String ("Encodeur 1 : style ; encodeur 2 : son") : "Encodeur 1 : catégorie ; encodeur 2 : son"_fr);
             return;
 
         case Bouton::pageGauche:
@@ -1406,7 +1677,7 @@ EtatSurface Pilote::calculerEtat() const
     const bool clignote = std::fmod (p.fraction * 2.0, 1.0) < 0.5;
     const bool pulse = p.fraction < 0.5;
 
-    if (mode == Mode::note && ! morceau.pistes[(size_t) pisteChoisie].estUneBatterie())
+    if (mode == Mode::note && ! morceau.pistes[(size_t) pisteChoisie].jouePads())
     {
         // Jeu en gamme : fondamentales en couleur pleine, autres notes en couleur faible, pad tenu en blanc
         for (int i = 0; i < 64; ++i)
@@ -1419,10 +1690,11 @@ EtatSurface Pilote::calculerEtat() const
     else if (mode == Mode::note)
     {
         // Pads de la batterie (en bas à gauche) et pas à pas (en haut)
-        const auto& kit = morceau.pistes[(size_t) pisteChoisie].kit;
+        const auto& piste = morceau.pistes[(size_t) pisteChoisie];
+        const auto& kit = piste.kit;
 
         for (int pad = 0; pad < 16; ++pad)
-            etat.pads[(size_t) ((pad / 4) * 8 + pad % 4)] = kit.pads[(size_t) pad].son.isEmpty() ? palette::noir
+            etat.pads[(size_t) ((pad / 4) * 8 + pad % 4)] = (piste.estUnSampler() ? piste.sampler.son.isEmpty() : kit.pads[(size_t) pad].son.isEmpty()) ? palette::noir
                                                            : palette::indexDePiste (pisteChoisie, padsAppuyes[(size_t) pad] ? 3 : pad == padChoisi ? 2 : 1);
 
         const auto cible = caseDuPasAPas();
@@ -1551,7 +1823,7 @@ EtatSurface Pilote::calculerEtat() const
         if (page != Page::departs) blanc (Bouton::pageDroite, false);
     }
 
-    if (mode == Mode::note && ! morceau.pistes[(size_t) pisteChoisie].estUneBatterie())
+    if (mode == Mode::note && ! morceau.pistes[(size_t) pisteChoisie].jouePads())
     {
         if (octaves[(size_t) pisteChoisie] < 7) blanc (Bouton::octaveHaut, false);
         if (octaves[(size_t) pisteChoisie] > 0) blanc (Bouton::octaveBas, false);
@@ -1559,7 +1831,8 @@ EtatSurface Pilote::calculerEtat() const
 
     // Device, Browse, Clip et Convert servent sur toutes les pistes
     blanc (Bouton::device, page == Page::device || page == Page::generateur || page == Page::commun || page == Page::macros
-                           || page == Page::melodie || page == Page::communSynthe || page == Page::effet);
+                           || page == Page::melodie || page == Page::communSynthe || page == Page::effet
+                           || page == Page::sampler || page == Page::communSampler);
     blanc (Bouton::clip, page == Page::variation);
     blanc (Bouton::convert, generateurVise() != nullptr || melodieVisee() != nullptr);
     blanc (Bouton::browse, page == Page::browse);

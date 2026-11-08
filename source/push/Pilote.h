@@ -25,7 +25,7 @@ public:
     void dessinerEcran (juce::Image&) const;
 
     enum class Page { mix, clic, device, generateur, commun, variation, browse, gamme, macros, melodie, communSynthe,
-                      envoisDelay, envoisReverb, departs, effet, ajoutEffet, enchainement };
+                      envoisDelay, envoisReverb, departs, effet, ajoutEffet, enchainement, sampler, communSampler };
     enum class Mode { session, note };
     Page getPage() const                    { return page; }
     Mode getMode() const                    { return mode; }
@@ -56,6 +56,9 @@ public:
 
     const Annonce& getAnnonce() const       { return annonce; }
 
+    /** Des sons glissés sur la fenêtre du Mac, déjà copiés dans Sons : le premier va au sampler de la piste choisie. */
+    void sonsDeposes (const juce::StringArray& chemins);
+
 private:
     struct Reglage
     {
@@ -84,7 +87,7 @@ private:
     std::array<bool, nombreEncodeurs> touches {};
     std::array<int, nombreEncodeurs> crans {};
     std::array<Reglage, 8> pageClic, pageMix, pageDevice, pageBrowse, pageEuclide, pageCartes, pageCommun, pageVariation, pageGamme, pageMacros, pageMelodie, pageCommunSynthe,
-                           pageEnvoisDelay, pageEnvoisReverb, pageDeparts, pageEffet, pageAjout, pageEnchainement;
+                           pageEnvoisDelay, pageEnvoisReverb, pageDeparts, pageEffet, pageAjout, pageEnchainement, pageSampler, pageCommunSampler;
     int emplacementEffet = 0, typeAAjouter = 0, emplacementAAjouter = 0;
     int voixEuclidienne = 0;
     bool varierEnDupliquant = false;
@@ -113,6 +116,8 @@ private:
             case Page::effet:   return pageEffet;
             case Page::ajoutEffet: return pageAjout;
             case Page::enchainement: return pageEnchainement;
+            case Page::sampler: return pageSampler;
+            case Page::communSampler: return pageCommunSampler;
             case Page::generateur:
             {
                 const auto* g = generateurVise();
@@ -124,6 +129,14 @@ private:
     }
 
     bool pisteChoisieEstUneBatterie() const;
+    bool pisteChoisieEstUnSampler() const;
+    bool pisteChoisieEstUnSynthe() const;
+    bool pisteChoisieJouePads() const;      ///< Batterie, ou sampler découpé : pads en 4 sur 4 et pas à pas
+    void modifierSampler (int encodeur, std::function<void (ReglagesSampler&)>);
+    void preparerClipDeBoucle();
+    void changerDeMachine (const juce::String& machine);
+    void ouvrirLeNavigateur();
+    void preecouterLeSampler();
     const Generateur* generateurVise() const;
     void modifierGenerateur (int encodeur, std::function<void (Generateur&)>);
     const GenerateurMelodique* melodieVisee() const;

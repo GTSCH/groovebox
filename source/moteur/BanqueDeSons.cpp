@@ -32,8 +32,8 @@ const Echantillon* BanqueDeSons::charger (const juce::String& chemin)
         return nullptr;
     }
 
-    // Au plus 20 secondes et 2 canaux : une batterie n'a pas besoin de plus
-    const auto longueur = (int) juce::jmin (lecteur->lengthInSamples, (juce::int64) (lecteur->sampleRate * 20.0));
+    // Au plus 60 secondes et 2 canaux (voix et boucles du sampler)
+    const auto longueur = (int) juce::jmin (lecteur->lengthInSamples, (juce::int64) (lecteur->sampleRate * 60.0));
     auto e = std::make_unique<Echantillon>();
     e->audio.setSize ((int) juce::jmin (2u, lecteur->numChannels), longueur);
     lecteur->read (&e->audio, 0, longueur, 0, true, e->audio.getNumChannels() > 1);
@@ -65,6 +65,49 @@ juce::StringArray BanqueDeSons::sons (const juce::String& categorie) const
 
     liste.sortNatural();
     return liste;
+}
+
+bool BanqueDeSons::estUnSon (const juce::File& f)
+{
+    return f.hasFileExtension ("wav;aif;aiff;mp3;flac;m4a;caf;ogg");
+}
+
+juce::StringArray BanqueDeSons::importer (const juce::StringArray& fichiers)
+{
+    juce::StringArray chemins;
+    auto dossier = racine.getChildFile ("Mes sons");
+    dossier.createDirectory();
+
+    for (auto& nom : fichiers)
+    {
+        const juce::File source (nom);
+
+        if (! source.existsAsFile() || ! estUnSon (source))
+            continue;
+
+        // Fichier déjà dans Sons : on le prend tel quel
+        if (source.isAChildOf (racine))
+        {
+            chemins.add (source.getRelativePathFrom (racine));
+            continue;
+        }
+
+        std::unique_ptr<juce::AudioFormatReader> lecteur (formats.createReaderFor (source));
+
+        if (lecteur == nullptr)
+            continue;
+
+        lecteur.reset();
+        auto cible = dossier.getChildFile (source.getFileName());
+
+        if (cible.existsAsFile())
+            cible = cible.getNonexistentSibling (true);
+
+        if (source.copyFileTo (cible))
+            chemins.add (cible.getRelativePathFrom (racine));
+    }
+
+    return chemins;
 }
 
 } // namespace groovebox

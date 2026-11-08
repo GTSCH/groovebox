@@ -25,6 +25,7 @@ set (SOURCES_MOTEUR
     source/modele/Demo.cpp
     source/modele/Bibliotheque.cpp
     source/modele/Kit.cpp
+    source/modele/Sampler.cpp
     source/modele/Generateurs.cpp
     source/modele/Gamme.cpp
     source/modele/Melodies.cpp
@@ -39,6 +40,7 @@ set (SOURCES_MOTEUR
     source/moteur/InstrumentProvisoire.cpp
     source/moteur/BanqueDeSons.cpp
     source/moteur/BatteriePlugin.cpp
+    source/moteur/SamplerPlugin.cpp
     source/moteur/FabriqueDeSons.cpp
     source/moteur/Surge.cpp
     source/moteur/SonsDeSynthe.cpp

@@ -14,6 +14,20 @@ namespace fabriqueDeSons
 
     /** Écrit les sons manquants des kits de départ ; renvoie le nombre de fichiers écrits. */
     int assurerKitsDeDepart (const juce::File& dossierSons);
+
+    /** Sons de départ du sampler : boucles de batterie à plusieurs tempos, textures et sons en do (note 60),
+        sons rigolos, et voix dites par la synthèse vocale du Mac (si elle répond). Seuls les fichiers manquants sont écrits. */
+    int assurerSonsDuSampler (const juce::File& dossierSons, bool avecVoix = true);
+
+    /** Les boucles de départ : nom de fichier, tempo d'origine, mesure, nombre de mesures. */
+    struct BoucleDeDepart
+    {
+        juce::String nom;
+        double tempo;
+        int numerateur, denominateur, mesures;
+    };
+
+    const std::vector<BoucleDeDepart>& bouclesDeDepart();
 }
 
 } // namespace groovebox

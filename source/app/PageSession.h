@@ -14,6 +14,7 @@ struct ActionsMorceaux
     std::function<void()> demo;
     std::function<void()> demo2;
     std::function<void()> ouvrirSimulateur;
+    std::function<void (const juce::StringArray&)> deposerDesSons;    ///< Fichiers son glissés sur la fenêtre
 };
 
 /** Onglet « Session » : la grille des clips telle qu'elle joue, pour voir et dépanner (le jeu se fait au Push). */

@@ -55,7 +55,7 @@ namespace
         return c;
     }
 
-    const juce::StringArray nomsDesSons { "batterie", "basse", "nappe", "lead", "arpege", "percussions", "stab", "texture" };
+    const juce::StringArray nomsDesSons { "batterie", "basse", "nappe", "lead", "arpege", "percussions", "stab", "texture", "sampler" };
     const juce::StringArray nomsDesCalages { "temps", "mesure", "deuxMesures", "quatreMesures" };
 }
 
@@ -169,6 +169,8 @@ juce::var Morceau::versJson() const
 
         if (p.estUneBatterie())
             objet->setProperty ("kit", p.kit.versJson());
+        else if (p.estUnSampler())
+            objet->setProperty ("sampler", p.sampler.versJson());
         else
         {
             objet->setProperty ("sonDeSynthe", p.sonDeSynthe);
@@ -236,6 +238,7 @@ juce::String nomDuSon (SonProvisoire s)
         case SonProvisoire::percussions:    return "Percussions";
         case SonProvisoire::stab:           return "Stab";
         case SonProvisoire::texture:        return "Texture";
+        case SonProvisoire::sampler:        return "Sampler";
     }
 
     return {};
@@ -399,6 +402,8 @@ Morceau Morceau::depuisJson (const juce::var& v)
             if (auto macros = p.getProperty ("macros", {}).getArray(); macros != nullptr && macros->size() == 8)
                 for (int k = 0; k < 8; ++k)
                     piste.macros[(size_t) k] = juce::jlimit (0.0f, 1.0f, (float) (*macros)[k]);
+
+            piste.sampler = ReglagesSampler::depuisJson (p.getProperty ("sampler", {}));
 
             if (const auto kit = p.getProperty ("kit", {}); kit.isObject())
                 piste.kit = Kit::depuisJson (kit);

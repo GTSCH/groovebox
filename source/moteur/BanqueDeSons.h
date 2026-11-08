@@ -29,6 +29,11 @@ public:
     juce::StringArray categories() const;
     juce::StringArray sons (const juce::String& categorie) const;     ///< Chemins relatifs, triés
 
+    /** Copie des fichiers son (WAV, AIFF, MP3, FLAC...) dans le dossier « Mes sons » ; renvoie leurs chemins relatifs.
+        Un nom déjà pris reçoit un numéro ; un fichier illisible est laissé de côté. */
+    juce::StringArray importer (const juce::StringArray& fichiers);
+    static bool estUnSon (const juce::File&);
+
 private:
     juce::File racine;
     juce::AudioFormatManager formats;
