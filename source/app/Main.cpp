@@ -7,6 +7,7 @@
 #include "modele/Bibliotheque.h"
 #include "modele/Demo.h"
 #include "moteur/Surge.h"
+#include "moteur/Exports.h"
 
 namespace groovebox
 {
@@ -26,10 +27,14 @@ class Application  : public juce::JUCEApplication,
 public:
     const juce::String getApplicationName() override       { return "groovebox"; }
     const juce::String getApplicationVersion() override    { return ProjectInfo::versionString; }
-    bool moreThanOneInstanceAllowed() override             { return false; }
+    // Un export tourne dans un second groovebox, sans fenêtre ni carte son
+    bool moreThanOneInstanceAllowed() override             { return getCommandLineParameters().contains ("--exporter"); }
 
     void initialise (const juce::String& ligneDeCommande) override
     {
+        if (const auto args = juce::StringArray::fromTokens (ligneDeCommande, true); args.contains ("--exporter"))
+            return lancerLExport (juce::File (args[args.indexOf ("--exporter") + 1].unquoted()));
+
         journal.reset (juce::FileLogger::createDefaultAppLogger ("groovebox", "journal.txt",
                                                                  "groovebox " + getApplicationVersion() + " démarré"_fr));
         juce::Logger::setCurrentLogger (journal.get());
@@ -98,7 +103,7 @@ public:
         }
 
         if (const auto i = arguments.indexOf ("--diagnostic"); i >= 0)
-            lancerDiagnostic (arguments[i + 1].getIntValue(), arguments.contains ("--demo"), arguments.contains ("--prise"));
+            lancerDiagnostic (arguments[i + 1].getIntValue(), arguments.contains ("--demo"), arguments.contains ("--prise"), arguments.contains ("--charge"));
         else
             demarrerLeJeu();
     }
@@ -128,7 +133,7 @@ public:
         if (bibliotheque != nullptr)
             bibliotheque->marquerFermeture();
 
-        if (engine != nullptr)
+        if (engine != nullptr && ! exportEnCours)
         {
             engine->getDeviceManager().saveSettings();
             engine->getPropertyStorage().getPropertiesFile().saveIfNeeded();
@@ -395,7 +400,23 @@ private:
 
         void timerCallback() override
         {
-            chargeMax = juce::jmax (chargeMax, engine.getDeviceManager().getCpuUsage());
+            const auto charge = engine.getDeviceManager().getCpuUsage();
+            chargeMax = juce::jmax (chargeMax, charge);
+            chargeMaxDeLaMinute = juce::jmax (chargeMaxDeLaMinute, charge);
+            sommeDeLaMinute += charge;
+
+            // Une ligne par minute : on voit si le Mac ralentit en chauffant
+            if (++secondesDeLaMinute == 60)
+            {
+                juce::String ligne ("Charge, minute ");
+                ligne << (secondes - restant + 1) / 60 << " : moyenne " << juce::roundToInt (sommeDeLaMinute / 60.0f * 100.0f)
+                      << " %, max " << juce::roundToInt (chargeMaxDeLaMinute * 100.0f) << " %, coupures "
+                      << (dernieresCoupures - coupuresAuDepart);
+                juce::Logger::writeToLog (ligne);
+                std::cout << ligne << std::endl;
+                secondesDeLaMinute = 0;
+                sommeDeLaMinute = chargeMaxDeLaMinute = 0.0f;
+            }
 
             if (auto carte = engine.getDeviceManager().deviceManager.getCurrentAudioDevice())
                 if (carte->getXRunCount() != dernieresCoupures)
@@ -442,18 +463,51 @@ private:
         te::Engine& engine;
         Moteur& moteur;
         int restant, secondes, coupuresAuDepart = 0, dernieresCoupures = 0;
-        float chargeMax = 0.0f;
+        float chargeMax = 0.0f, chargeMaxDeLaMinute = 0.0f, sommeDeLaMinute = 0.0f;
+        int secondesDeLaMinute = 0;
         int clipsLances = 0, plusRemplie = 0, secondeScene = 0, enchainementsLances = 0;
         Morceau morceauDeDepart;
     };
 
-    void lancerDiagnostic (int secondes, bool avecLaDemo, bool avecUnePrise)
+    /** --exporter <demande.json> : calcule les exports demandés et dit où il en est sur la sortie standard
+        (« progression 0.42 texte », « fichier chemin », « remarque texte », « fin secondes-de-musique secondes-de-calcul »). */
+    void lancerLExport (const juce::File& fichierDeDemande)
+    {
+        exportEnCours = true;
+        engine = std::make_unique<te::Engine> (std::make_unique<Reglages>(),
+                                               std::make_unique<te::UIBehaviour>(),
+                                               std::make_unique<ComportementMoteur>());
+
+        juce::MessageManager::callAsync ([this, fichierDeDemande]
+        {
+            const auto demande = exports::Demande::depuisJson (juce::JSON::parse (fichierDeDemande));
+            const auto r = exports::exporter (*engine, demande, nullptr, [] (float x, const juce::String& texte)
+            {
+                std::cout << "progression " << x << " " << texte << std::endl;
+            });
+
+            for (auto& f : r.fichiers)
+                std::cout << "fichier " << f << std::endl;
+
+            for (auto& remarque : r.remarques)
+                std::cout << "remarque " << remarque << std::endl;
+
+            std::cout << "fin " << r.secondesDeMusique << " " << r.secondesDeCalcul << std::endl;
+            quit();
+        });
+    }
+
+    void lancerDiagnostic (int secondes, bool avecLaDemo, bool avecUnePrise, bool chargeLourde)
     {
         diagnosticEnCours = true;   // aucune sauvegarde pendant le diagnostic
 
         // Avec --demo : la démo, sans toucher aux morceaux enregistrés
         if (avecLaDemo)
             moteur->chargerMorceau (morceauDeDemonstration());
+
+        // Avec --charge : la Démo 2 (8 pistes, Surge) dont la batterie devient une batterie guide acoustique
+        if (chargeLourde)
+            moteur->chargerMorceau (morceauDeCharge());
         diagnostic = std::make_unique<Diagnostic> (*engine, *moteur, juce::jmax (1, secondes));
 
         // Avec --prise : une prise pendant tout le diagnostic, dans un dossier temporaire effacé à la fermeture
@@ -471,12 +525,32 @@ private:
         }
     }
 
+    static Morceau morceauDeCharge()
+    {
+        auto m = morceauDeDemonstration2();
+        auto& guide = m.pistes[0];
+        guide.son = SonProvisoire::batterie;
+        guide.guide = true;
+        guide.kit = kitsAcoustiques::kit (kitsAcoustiques::kitDeLaGuide);
+
+        for (auto& scene : m.scenes)
+            if (auto& c = scene.clips[0])
+            {
+                c->longueurMesures = 4;
+                c->generateur = Generateur::parDefaut (MoteurRythmique::batteur, m.mesure);
+                c->generateur->roulement = 4;
+                c->regenerer (m.mesure, m.gamme);
+            }
+
+        return m;
+    }
+
     std::unique_ptr<juce::FileLogger> journal;
     std::unique_ptr<te::Engine> engine;
     std::unique_ptr<Moteur> moteur;
     std::unique_ptr<Bibliotheque> bibliotheque;
     juce::String dossierCourant;
-    bool plantageDetecte = false, diagnosticEnCours = false;
+    bool plantageDetecte = false, diagnosticEnCours = false, exportEnCours = false;
     juce::File dossierDePriseDeDiagnostic;
     std::unique_ptr<Surface> surface;
     std::unique_ptr<EcranPush> ecranPush;

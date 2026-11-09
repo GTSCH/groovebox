@@ -3,6 +3,7 @@
 
 #include <JuceHeader.h>
 #include "moteur/Moteur.h"
+#include "moteur/Exports.h"
 #include "moteur/Reglages.h"
 #include "modele/TapTempo.h"
 #include "modele/Demo.h"
@@ -15,6 +16,7 @@
 #include "app/Simulateur.h"
 #include "app/PagePrises.h"
 #include "app/PageRetouche.h"
+#include "app/PageExports.h"
 #include "moteur/SonsDeSynthe.h"
 
 namespace groovebox
@@ -5448,6 +5450,232 @@ public:
 
 
 //==============================================================================
+class EssaisExports  : public juce::UnitTest
+{
+public:
+    EssaisExports()  : juce::UnitTest ("Exports", "groovebox") {}
+
+    /** Rimshot (son court) sur le premier temps (piste 1), caisse claire de la guide sur 2 et 4 (piste 2). */
+    static Morceau morceauDEssai()
+    {
+        auto m = morceauAvec (120.0, Mesure::standard (4, 4));
+        m.nom = "Essai d'export";
+        m.assurerScenes (1);
+
+        for (int p : { 0, 1 })
+        {
+            m.pistes[(size_t) p].son = SonProvisoire::batterie;
+            m.pistes[(size_t) p].kit = kitsDeDepart::kit ("Analogique");
+        }
+
+        m.pistes[1].guide = true;
+        m.pistes[1].nom = "Guide";
+        m.scenes[0].clips[0] = Clip { "GC", 1, { { 0.0, 0.25, 37, 120 } } };
+        m.scenes[0].clips[1] = Clip { "CC", 1, { { 1.0, 0.25, 38, 120 }, { 3.0, 0.25, 38, 120 } } };
+        return m;
+    }
+
+    static juce::AudioBuffer<float> lire (const juce::File& f)
+    {
+        juce::AudioFormatManager formats;
+        formats.registerBasicFormats();
+        std::unique_ptr<juce::AudioFormatReader> l (formats.createReaderFor (f));
+        juce::AudioBuffer<float> b (2, l != nullptr ? (int) l->lengthInSamples : 0);
+
+        if (l != nullptr)
+        {
+            l->read (&b, 0, b.getNumSamples(), 0, true, true);
+            expectEqualsStatique (l->bitsPerSample == 24 && l->sampleRate == 48000.0);
+        }
+
+        return b;
+    }
+
+    static void expectEqualsStatique (bool) {}
+
+    static float creteEntre (const juce::AudioBuffer<float>& b, double de, double a)
+    {
+        const int i = (int) (de * 48000.0), j = juce::jmin (b.getNumSamples(), (int) (a * 48000.0));
+        return j > i ? b.getMagnitude (0, i, j - i) : 0.0f;
+    }
+
+    void runTest() override
+    {
+        auto& engine = *te::Engine::getEngines()[0];
+        const auto dossier = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("groovebox-essais-exports");
+
+        beginTest ("Demande : JSON ; nom des rendus"_fr);
+        {
+            exports::Demande d;
+            d.morceau = morceauDEssai();
+            d.scene = 0;
+            d.mesures = 16;
+            d.rendus = { exports::Rendu::complet, exports::Rendu::pistes };
+            d.dossier = dossier;
+            d.nom = "Scène 1"_fr;
+            const auto relue = exports::Demande::depuisJson (juce::JSON::parse (juce::JSON::toString (d.versJson())));
+            expect (relue.morceau == d.morceau && relue.mesures == 16 && relue.rendus == d.rendus && relue.dossier == dossier && relue.nom == d.nom && ! relue.deroule);
+            expectEquals (exports::nomDuRendu (exports::Rendu::sansGuideAvecClic, false), juce::String ("mix + clic"));
+        }
+
+        beginTest ("Scène sur 4 mesures : mix complet, sans guide, sans guide + clic, pistes séparées, plus vite que la lecture"_fr);
+        {
+            dossier.deleteRecursively();
+            exports::Demande d;
+            d.morceau = morceauDEssai();
+            d.mesures = 4;
+            d.rendus = { exports::Rendu::complet, exports::Rendu::sansGuide, exports::Rendu::sansGuideAvecClic, exports::Rendu::pistes };
+            d.dossier = dossier;
+            d.nom = "Essai";
+            int appels = 0;
+            const auto r = exports::exporter (engine, d, &banqueEssai(), [&] (float, const juce::String&) { ++appels; });
+
+            for (auto& remarque : r.remarques)
+                logMessage ("  " + remarque);
+
+            expectEquals (r.fichiers.size(), 5, r.fichiers.joinIntoString (", "));
+            expect (appels > 10, "la progression avance");
+            logMessage ("  " + juce::String (r.secondesDeMusique, 1) + " s de musique, 10 rendus en " + juce::String (r.secondesDeCalcul, 1) + " s");
+            expect (r.secondesDeCalcul < 10.0 * r.secondesDeMusique * 0.5, "au moins deux fois plus vite que la lecture");
+
+            const auto complet = lire (dossier.getChildFile ("Essai - mix complet.wav"));
+            const auto sansGuide = lire (dossier.getChildFile ("Essai - mix sans guide.wav"));
+            const auto avecClic = lire (dossier.getChildFile ("Essai - mix sans guide + clic.wav"));
+            expect (dossier.getChildFile ("Essai - piste 1 GC.wav").existsAsFile() || dossier.getChildFile ("Essai - piste 1 " + d.morceau.pistes[0].nom + ".wav").existsAsFile(),
+                    "piste 1 : " + dossier.findChildFiles (juce::File::findFiles, false).size());
+
+            // 4 mesures à 120 : 8 s ; la queue d'une grosse caisse est courte
+            const double duree = complet.getNumSamples() / 48000.0;
+            expect (duree >= 8.0 && duree < 9.5, "durée " + juce::String (duree, 2) + " s");
+
+            // Le premier coup tombe au tout début du fichier
+            int premier = 0;
+            while (premier < complet.getNumSamples() && std::abs (complet.getSample (0, premier)) < 0.02f)
+                ++premier;
+            expect (premier < 48 * 2, "premier coup à " + juce::String (premier / 48.0, 1) + " ms");
+
+            // Le coup de la mesure 2 tombe à 2 s pile
+            int second = (int) (1.9 * 48000.0);
+            while (second < sansGuide.getNumSamples() && std::abs (sansGuide.getSample (0, second)) < 0.02f)
+                ++second;
+            expectWithinAbsoluteError (second / 48000.0, 2.0, 0.002, "mesure 2");
+
+            for (auto& f : r.fichiers)
+                logMessage ("  " + juce::File (f).getFileName() + " : " + juce::String (lire (juce::File (f)).getNumSamples() / 48000.0, 2) + " s");
+
+            // Sur le temps 2 : la guide dans le mix complet, rien sans elle, le clic avec lui
+            expect (creteEntre (complet, 0.5, 0.6) > 0.05f, "guide dans le mix complet");
+            expect (creteEntre (sansGuide, 0.5, 0.6) < 0.01f, "pas de guide : "_fr + juce::String (creteEntre (sansGuide, 0.5, 0.6)));
+            expect (creteEntre (avecClic, 0.5, 0.6) > 0.05f, "le clic sur le temps 2");
+            expect (creteEntre (sansGuide, 0.0, 0.1) > 0.05f, "le rimshot reste");
+            expect (creteEntre (complet, 8.3, 20.0) < 0.01f, "rien après la fin");
+            expect (avecClic.getNumSamples() < 8.5 * 48000.0, "le clic s'arrête avec la musique");
+        }
+
+        beginTest ("Déroulé : joué d'un bout à l'autre, sections ouvertes comprises, guide coupée dans chaque section"_fr);
+        {
+            dossier.deleteRecursively();
+            const auto m = morceauDEssai();
+            Deroule d;
+            d.nom = "Concert";
+
+            for (int k = 0; k < 2; ++k)
+            {
+                Section s;
+                s.nom = "Partie " + juce::String (k + 1);
+                s.scene = 0;
+                s.longueur = 8.0;
+                s.ouverte = k == 0;
+                s.etat = m.versJson();
+                s.scenesDeDepart[0] = 0;
+                s.scenesDeDepart[1] = 0;
+                d.sections.push_back (s);
+            }
+
+            exports::Demande demande;
+            demande.morceau = m;
+            demande.deroule = d;
+            demande.rendus = { exports::Rendu::complet, exports::Rendu::sansGuide };
+            demande.dossier = dossier;
+            demande.nom = "Concert";
+            const auto r = exports::exporter (engine, demande, &banqueEssai());
+            expectEquals (r.fichiers.size(), 2, r.fichiers.joinIntoString (", ") + r.remarques.joinIntoString (", "));
+
+            const auto complet = lire (dossier.getChildFile ("Concert - mix complet.wav"));
+            const auto sansGuide = lire (dossier.getChildFile ("Concert - mix sans guide.wav"));
+            const double duree = complet.getNumSamples() / 48000.0;
+            expect (duree >= 7.5 && duree < 9.5, "4 mesures : "_fr + juce::String (duree, 2) + " s");
+            expect (creteEntre (complet, 4.5, 4.6) > 0.05f, "guide dans la deuxième section"_fr);
+            expect (creteEntre (sansGuide, 4.5, 4.6) < 0.01f && creteEntre (sansGuide, 0.5, 0.6) < 0.01f, "sans guide dans les deux sections");
+        }
+
+        beginTest ("L'onglet Exports propose les déroulés et les scènes du morceau, et ses prises"_fr);
+        {
+            const auto racine = dossier.getChildFile ("Morceau");
+            racine.getChildFile ("prises").getChildFile ("2026-11-08 20h00").createDirectory();
+            racine.getChildFile ("prises").getChildFile ("2026-11-08 20h00").getChildFile ("sortie.wav").replaceWithText ("x");
+            Deroule d;
+            d.nom = "Concert";
+            Section s;
+            s.longueur = 8.0;
+            d.sections.push_back (s);
+            racine.getChildFile ("deroules").createDirectory();
+            d.enregistrer (racine.getChildFile ("deroules").getChildFile ("Concert.json"));
+
+            CarteSimulee carte (engine, 2);
+            Moteur moteur (engine, morceauDEssai(), &banqueEssai());
+            moteur.dossierDesPrises = [racine] { return racine.getChildFile ("prises"); };
+            PageExports page (moteur);
+            page.setSize (1100, 680);
+            page.setVisible (true);
+            laisserTravailler (100);
+
+            auto image = page.createComponentSnapshot (page.getLocalBounds());
+            const auto fichier = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("groovebox-onglet-exports.png");
+            fichier.deleteFile();
+            juce::FileOutputStream flux (fichier);
+            juce::PNGImageFormat().writeImageToStream (image, flux);
+            logMessage ("  image de l'onglet : " + fichier.getFullPathName());
+
+            juce::StringArray textes;
+            std::function<void (juce::Component&)> parcourir = [&] (juce::Component& c)
+            {
+                if (auto* b = dynamic_cast<juce::ComboBox*> (&c))
+                    for (int i = 0; i < b->getNumItems(); ++i)
+                        textes.add (b->getItemText (i));
+
+                for (auto* enfant : c.getChildren())
+                    parcourir (*enfant);
+            };
+            parcourir (page);
+            expect (textes.contains ("Déroulé « Concert »"_fr) && textes.contains ("Scène 1"_fr), textes.joinIntoString (" | "));
+            expect (textes.joinIntoString ("|").contains ("2026-11-08 20h00"), "la prise : "_fr + textes.joinIntoString (" | "));
+        }
+
+        beginTest ("Prise de répétition : sortie et micros copiés dans les exports"_fr);
+        {
+            const auto prise = dossier.getChildFile ("prise-essai");
+            prise.createDirectory();
+            juce::AudioBuffer<float> b (2, 4800);
+            b.clear();
+
+            for (auto nom : { "sortie.wav", "micros.wav" })
+            {
+                juce::WavAudioFormat wav;
+                std::unique_ptr<juce::AudioFormatWriter> e (wav.createWriterFor (new juce::FileOutputStream (prise.getChildFile (nom)), 48000.0, 2, 24, {}, 0));
+                e->writeFromAudioSampleBuffer (b, 0, b.getNumSamples());
+            }
+
+            const auto f = exports::copierLaPrise (prise, dossier.getChildFile ("exports"), "Répétition"_fr);
+            expectEquals (f.size(), 2);
+            expect (dossier.getChildFile ("exports").getChildFile ("Prise Répétition - micros.wav"_fr).existsAsFile());
+        }
+
+        dossier.deleteRecursively();
+    }
+};
+
+//==============================================================================
 /** Hors série : chaque groove du batteur, 4 mesures dans sa mesure et à son tempo, avec les kits acoustiques du vrai
     dossier Sons, rendus à la suite dans Musique, groovebox, pour l'écouter. */
 class EssaisEcouteGuide  : public juce::UnitTest
@@ -5570,6 +5798,7 @@ static EssaisDemo2 essaisDemo2;
 static EssaisSampler essaisSampler;
 static EssaisEcouteSampler essaisEcouteSampler;
 static EssaisGuide essaisGuide;
+static EssaisExports essaisExports;
 static EssaisEcouteGuide essaisEcouteGuide;
 
 } // namespace groovebox

@@ -41,6 +41,7 @@ set (SOURCES_MOTEUR
     source/moteur/BanqueDeSons.cpp
     source/moteur/BatteriePlugin.cpp
     source/moteur/SamplerPlugin.cpp
+    source/moteur/Exports.cpp
     source/moteur/FabriqueDeSons.cpp
     source/moteur/Surge.cpp
     source/moteur/SonsDeSynthe.cpp
@@ -93,6 +94,7 @@ target_sources (groovebox PRIVATE
     source/app/PageJeu.cpp
     source/app/PagePrises.cpp
     source/app/PageRetouche.cpp
+    source/app/PageExports.cpp
     source/app/PageCarteSon.cpp
     source/app/PageSession.cpp
     source/app/Simulateur.cpp)
@@ -109,6 +111,7 @@ target_sources (groovebox_essais PRIVATE
     source/app/Simulateur.cpp
     source/app/PagePrises.cpp
     source/app/PageRetouche.cpp
+    source/app/PageExports.cpp
     essais/Essais.cpp)
 target_include_directories (groovebox_essais PRIVATE source)
 target_compile_definitions (groovebox_essais PRIVATE ${DEFINITIONS_COMMUNES} JUCE_MODAL_LOOPS_PERMITTED=1)

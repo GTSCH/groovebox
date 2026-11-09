@@ -15,6 +15,7 @@ FenetrePrincipale::FenetrePrincipale (te::Engine& engine, Moteur& moteur,
     onglets.addTab ("Jeu", couleurFond, pageJeu, true);
     onglets.addTab ("Prises", couleurFond, new PagePrises (engine, moteur), true);
     onglets.addTab ("Retouche", couleurFond, new PageRetouche (engine, moteur), true);
+    onglets.addTab ("Exports", couleurFond, new PageExports (moteur), true);
     onglets.addTab ("Carte son", couleurFond, new PageCarteSon (engine, moteur), true);
     onglets.setTabBarDepth (40);
     onglets.setOutline (0);
